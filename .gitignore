@@ -1,0 +1,28 @@
+# Dependencies and local tooling
+node_modules/
+mobile/node_modules/
+server/node_modules/
+.venv/
+
+# Local environment and secrets
+.env
+*.local
+mobile/.env
+php-backend/.env
+
+# Expo and native build output
+mobile/.expo/
+mobile/android/
+mobile/ios/
+mobile/dist/
+
+# Generated/debug artifacts
+*.log
+log.txt
+gradle-build.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+mobile/.git-local/

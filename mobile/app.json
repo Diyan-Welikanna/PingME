@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "PingMe",
+    "slug": "pingme",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
+    "plugins": [
+      "expo-location"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "PingMe uses your location only while you choose to share it with your trusted contacts."
+      }
+    },
+    "android": {
+      "icon": "./assets/icon.png",
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ],
+      "package": "com.dboy2001.pingme",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#E5684A"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "33ae812e-0185-422b-9599-bee4fa467fe6"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/33ae812e-0185-422b-9599-bee4fa467fe6"
+    }
+  }
+}
