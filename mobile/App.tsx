@@ -44,7 +44,30 @@ export default function App() {
   const [sharing, setSharing] = useState(true);
   const [people, setPeople] = useState<Person[]>([]);
 
-  useEffect(() => { AsyncStorage.getItem('pingme-token').then(async (storedToken) => { if (!storedToken) return; try { const response = await apiRequest<{ user: User; location: ApiLocation | null }>('/me', {}, storedToken); setToken(storedToken); setUser(response.user); setSharing(Boolean(response.user.locationSharingEnabled ?? true)); await refreshLocations(storedToken, response.user.id); setSignedIn(true); } catch { await signOut(); } finally { setLoadingSession(false); } }); }, []);
+  useEffect(() => {
+    let active = true;
+    AsyncStorage.getItem('pingme-token').then(async (storedToken) => {
+      if (!storedToken) return;
+      try {
+        const response = await apiRequest<{ user: User; location: ApiLocation | null }>('/me', {}, storedToken);
+        if (!active) return;
+        setToken(storedToken);
+        setUser(response.user);
+        setSharing(Boolean(response.user.locationSharingEnabled ?? true));
+        await refreshLocations(storedToken, response.user.id);
+        setSignedIn(true);
+      } catch {
+        if (active) await signOut();
+      } finally {
+        if (active) setLoadingSession(false);
+      }
+    }).catch(() => {
+      if (active) setLoadingSession(false);
+    }).finally(() => {
+      if (active) setLoadingSession(false);
+    });
+    return () => { active = false; };
+  }, []);
   async function refreshLocations(activeToken = token, activeUserId = user?.id) { if (!activeToken || !activeUserId) return; const response = await apiRequest<{ locations: ApiLocation[] }>('/locations', {}, activeToken); setPeople(mapPeople(response.locations, activeUserId)); }
   async function completeAuth(response: { token: string; user: User }) { await AsyncStorage.setItem('pingme-token', response.token); setToken(response.token); setUser(response.user); setSharing(Boolean(response.user.locationSharingEnabled ?? true)); try { await refreshLocations(response.token, response.user.id); setSignedIn(true); } catch (error) { await signOut(); throw error; } }
   async function signOut() { await AsyncStorage.removeItem('pingme-token'); setToken(''); setUser(null); setPeople([]); setSignedIn(false); setTab('home'); }
