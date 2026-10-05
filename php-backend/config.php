@@ -93,9 +93,22 @@ function tokenFor(array $user): string
     return "{$header}.{$payload}." . rtrim(strtr(base64_encode($signature), '+/', '-_'), '=');
 }
 
+function authorizationHeader(): string
+{
+    $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
+    if ($header === '' && function_exists('getallheaders')) {
+        foreach (getallheaders() as $name => $value) {
+            if (strtolower($name) === 'authorization') {
+                return $value;
+            }
+        }
+    }
+    return $header;
+}
+
 function authenticatedUserId(): string
 {
-    $header = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+    $header = authorizationHeader();
     if (!str_starts_with($header, 'Bearer ')) {
         jsonResponse(['message' => 'Authentication required'], 401);
     }

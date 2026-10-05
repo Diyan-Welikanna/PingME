@@ -2,7 +2,7 @@
   "expo": {
     "name": "PingMe",
     "slug": "pingme",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./assets/icon.png",
@@ -12,13 +12,20 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "PingMe uses your location only while you choose to share it with your trusted contacts."
+        "NSLocationWhenInUseUsageDescription": "PingMe uses your location only while you choose to share it with your trusted contacts.",
+        "NSLocalNetworkUsageDescription": "PingMe uses your local network to reach the development API running on your computer.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        }
       }
     },
     "android": {
       "icon": "./assets/icon.png",
       "usesCleartextTraffic": true,
       "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION"
       ],
