@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, SafeAreaView, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, AppState, Pressable, SafeAreaView, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 
 type Tab = 'home' | 'circle' | 'settings';
@@ -10,7 +10,7 @@ type Person = { id: string; name: string; initials: string; color: string; latit
 type User = { id: string; username: string; email: string; name: string; locationSharingEnabled?: boolean };
 type ApiLocation = { userId: string; username?: string; name: string; latitude: number; longitude: number; updatedAt: string };
 type FriendRequest = { id: string; status: string; senderId: string; senderUsername: string; senderName: string; receiverId: string; receiverUsername: string; receiverName: string; createdAt?: string; respondedAt?: string | null };
-const DEFAULT_API_URL = (process.env.EXPO_PUBLIC_API_URL || 'http://192.168.162.127:8080').replace(/\/$/, '');
+const DEFAULT_API_URL = (process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8080').replace(/\/$/, '');
 const API_URL_KEY = 'pingme-api-url';
 const colors = ['#E5684A', '#176B87', '#C08B45', '#7B6B9E'];
 let cachedApiUrl: string | null = null;
@@ -59,13 +59,14 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, token?: st
   return body as T;
 }
 
-function mapPeople(locations: ApiLocation[], userId: string): Person[] {
+function mapPeople(locations: ApiLocation[] = [], userId: string): Person[] {
   return locations.flatMap((location, index) => {
     const latitude = Number(location.latitude);
     const longitude = Number(location.longitude);
     const name = typeof location.name === 'string' && location.name.trim() ? location.name.trim() : 'PingMe user';
-    if (!location.userId || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
-    return [{ id: location.userId, name: location.userId === userId ? 'You' : name, initials: name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(), color: colors[index % colors.length], latitude, longitude, place: 'Shared location', updated: location.userId === userId ? 'Just now' : new Date(location.updatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), isUser: location.userId === userId }];
+    const updatedAt = new Date(location.updatedAt);
+    if (!location.userId || !Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return [];
+    return [{ id: location.userId, name: location.userId === userId ? 'You' : name, initials: name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(), color: colors[index % colors.length], latitude, longitude, place: 'Shared location', updated: location.userId === userId || Number.isNaN(updatedAt.getTime()) ? 'Just now' : updatedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), isUser: location.userId === userId }];
   });
 }
 
@@ -112,8 +113,8 @@ export default function App() {
         setToken(storedToken);
         setUser(response.user);
         setSharing(Boolean(response.user.locationSharingEnabled ?? true));
-        await refreshLocations();
         setSignedIn(true);
+        await refreshLocations().catch(() => setPeople([]));
       } catch {
         if (active) await signOut();
       } finally {
@@ -131,8 +132,8 @@ export default function App() {
     const currentToken = tokenRef.current;
     const currentUserId = userIdRef.current;
     if (!currentToken || !currentUserId) return;
-    const response = await apiRequest<{ locations: ApiLocation[] }>('/locations', {}, currentToken);
-    setPeople(mapPeople(response.locations, currentUserId));
+    const response = await apiRequest<{ locations?: ApiLocation[] }>('/locations', {}, currentToken);
+    setPeople(mapPeople(Array.isArray(response.locations) ? response.locations : [], currentUserId));
   }
 
   async function completeAuth(response: { token: string; user: User }) {
@@ -142,14 +143,72 @@ export default function App() {
     setToken(response.token);
     setUser(response.user);
     setSharing(Boolean(response.user.locationSharingEnabled ?? true));
+    setSignedIn(true);
     try {
       await refreshLocations();
-      setSignedIn(true);
-    } catch (error) {
-      await signOut();
-      throw error;
+    } catch {
+      setPeople([]);
     }
   }
+
+  useEffect(() => {
+    if (!signedIn) return;
+    let active = true;
+    const refresh = () => {
+      refreshLocations().catch(() => undefined);
+    };
+    refresh();
+    const interval = setInterval(refresh, 10000);
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (active && state === 'active') refresh();
+    });
+    return () => {
+      active = false;
+      clearInterval(interval);
+      subscription.remove();
+    };
+  }, [signedIn]);
+
+  useEffect(() => {
+    if (!signedIn || !sharing) return;
+    let active = true;
+
+    async function startLocationUpdates() {
+      let permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== 'granted') {
+        permission = await Location.requestForegroundPermissionsAsync();
+      }
+      if (!active || permission.status !== 'granted') return;
+
+      const publishCurrentLocation = async () => {
+        if (!active) return;
+        try {
+          const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          if (!active) return;
+          await apiRequest('/locations', {
+            method: 'POST',
+            body: JSON.stringify({ latitude: current.coords.latitude, longitude: current.coords.longitude }),
+          }, tokenRef.current);
+        } catch {
+          // Location updates are best effort; map refresh continues independently.
+        }
+      };
+
+      await publishCurrentLocation();
+        if (!active) return;
+      const interval = setInterval(publishCurrentLocation, 10000);
+      return () => clearInterval(interval);
+    }
+
+    let stopUpdates: (() => void) | undefined;
+    startLocationUpdates().then((stop) => {
+      stopUpdates = stop;
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+      stopUpdates?.();
+    };
+  }, [signedIn, sharing]);
 
   async function signOut() {
     tokenRef.current = '';
@@ -293,7 +352,7 @@ function Home({ people, sharing, onToggleSharing, userName }: { people: Person[]
           initialRegion={{ latitude: me.latitude, longitude: me.longitude, latitudeDelta: 0.06, longitudeDelta: 0.06 }}
         >
           {people.map((person) => (
-            <Marker key={person.id} coordinate={{ latitude: person.latitude, longitude: person.longitude }} title={person.isUser ? 'You' : person.name} pinColor={person.color} />
+            <Marker key={`${person.id}:${person.latitude}:${person.longitude}`} coordinate={{ latitude: person.latitude, longitude: person.longitude }} title={person.isUser ? 'You' : person.name} pinColor={person.color} />
           ))}
         </MapView>
         <View style={styles.mapLabel}>
@@ -338,17 +397,18 @@ function Circle({ people, token, userId, onRefresh }: { people: Person[]; token:
   const [busyId, setBusyId] = useState('');
 
   async function loadRequests() {
-    const response = await apiRequest<{ requests: FriendRequest[] }>('/friend-requests', {}, token);
-    setRequests(response.requests);
+    const response = await apiRequest<{ requests?: FriendRequest[] }>('/friend-requests', {}, token);
+    setRequests(Array.isArray(response.requests) ? response.requests : []);
   }
 
   async function loadFriends() {
-    const response = await apiRequest<{ friends: User[] }>('/friends', {}, token);
-    setFriends(response.friends);
+    const response = await apiRequest<{ friends?: User[] }>('/friends', {}, token);
+    setFriends(Array.isArray(response.friends) ? response.friends : []);
   }
 
   async function refreshAll() {
-    await Promise.all([loadRequests(), loadFriends(), onRefresh()]);
+    await Promise.all([loadRequests(), loadFriends()]);
+    await onRefresh().catch(() => undefined);
   }
 
   async function search() {
@@ -380,7 +440,7 @@ function Circle({ people, token, userId, onRefresh }: { people: Person[]; token:
     setBusyId(request.id);
     try {
       await apiRequest(`/friend-requests/${request.id}/${decision}`, { method: 'POST' }, token);
-      await Promise.all([loadRequests(), loadFriends(), onRefresh()]);
+      await refreshAll();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Request update failed');
     } finally {
@@ -389,7 +449,18 @@ function Circle({ people, token, userId, onRefresh }: { people: Person[]; token:
   }
 
   useEffect(() => {
-    refreshAll().catch(() => setMessage('Unable to load data'));
+    let active = true;
+    const refresh = () => {
+      refreshAll().catch(() => {
+        if (active) setMessage('Unable to load data');
+      });
+    };
+    refresh();
+    const interval = setInterval(refresh, 10000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, []);
 
   const incomingRequests = requests.filter((request) => request.receiverId === userId && request.status === 'pending');
@@ -506,15 +577,6 @@ function Circle({ people, token, userId, onRefresh }: { people: Person[]; token:
         </>
       )}
 
-      <View style={styles.invite}>
-        <View style={styles.inviteIcon}>
-          <Text style={styles.inviteIconText}>+</Text>
-        </View>
-        <View style={styles.shareCopy}>
-          <Text style={styles.cardTitle}>Invite someone</Text>
-          <Text style={styles.cardSub}>Search their username to connect</Text>
-        </View>
-      </View>
     </ScrollView>
   );
 }
