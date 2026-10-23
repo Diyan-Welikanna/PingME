@@ -10,6 +10,8 @@ A secure real-time location sharing MVP.
 
 ## Run locally
 
+Expo SDK 57 requires Node.js `20.19.4` or newer. Check with `node --version` before starting the mobile app.
+
 1. Start the API from the repository root:
 
    ```powershell
@@ -57,7 +59,13 @@ Then run:
 npm run start
 ```
 
-Press `a` in the Expo terminal to open PingMe on the running emulator. Alternatively, use `npm run android` to generate the native Android project and build it with Gradle; this requires the Android SDK and Android Studio command-line tools.
+Press `a` in the Expo terminal to open PingMe in Expo Go on the running emulator. You can also launch it directly with:
+
+```powershell
+npm run start:expo-go
+```
+
+Use `npm run start:clear` when switching builds or after stale JavaScript appears. The Home map uses Leaflet and OpenStreetMap tiles, so it does not require Google Maps or a Google Cloud billing account. The phone or emulator must have internet access to load the OpenStreetMap tiles.
 
 If the app still uses the previous LAN address, clear PingMe's emulator app data or change the API URL in the login screen, because the app stores the selected API URL locally.
 

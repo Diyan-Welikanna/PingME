@@ -1,0 +1,38 @@
+const plugins = ['expo-location', 'expo-font'];
+
+module.exports = {
+  expo: {
+    name: 'PingMe',
+    slug: 'pingme',
+    version: '1.0.7',
+    orientation: 'portrait',
+    userInterfaceStyle: 'light',
+    icon: './assets/icon.png',
+    plugins,
+    ios: {
+      supportsTablet: true,
+      infoPlist: {
+        NSLocationWhenInUseUsageDescription: 'PingMe uses your location only while you choose to share it with your trusted contacts.',
+        NSLocalNetworkUsageDescription: 'PingMe uses your local network to reach the development API running on your computer.',
+        NSAppTransportSecurity: {
+          NSAllowsArbitraryLoads: true,
+          NSAllowsLocalNetworking: true,
+        },
+      },
+    },
+    android: {
+      icon: './assets/icon.png',
+      usesCleartextTraffic: true,
+      permissions: ['INTERNET', 'ACCESS_NETWORK_STATE', 'ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION'],
+      package: 'com.dboy2001.pingme',
+      adaptiveIcon: {
+        foregroundImage: './assets/icon.png',
+        backgroundColor: '#E5684A',
+      },
+    },
+    web: { bundler: 'metro' },
+    extra: { eas: { projectId: '33ae812e-0185-422b-9599-bee4fa467fe6' } },
+    runtimeVersion: { policy: 'appVersion' },
+    updates: { url: 'https://u.expo.dev/33ae812e-0185-422b-9599-bee4fa467fe6' },
+  },
+};

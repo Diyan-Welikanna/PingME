@@ -3,15 +3,15 @@ import * as Location from 'expo-location';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Pressable, SafeAreaView, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import { WebView } from 'react-native-webview';
 
 type Tab = 'home' | 'circle' | 'settings';
 type Person = { id: string; name: string; initials: string; color: string; latitude: number; longitude: number; place: string; updated: string; isUser?: boolean };
 type User = { id: string; username: string; email: string; name: string; locationSharingEnabled?: boolean };
 type ApiLocation = { userId: string; username?: string; name: string; latitude: number; longitude: number; updatedAt: string };
 type FriendRequest = { id: string; status: string; senderId: string; senderUsername: string; senderName: string; receiverId: string; receiverUsername: string; receiverName: string; createdAt?: string; respondedAt?: string | null };
+type Coordinates = { latitude: number; longitude: number };
 const DEFAULT_API_URL = (process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8080').replace(/\/$/, '');
-const API_URL_KEY = 'pingme-api-url';
 const colors = ['#E5684A', '#176B87', '#C08B45', '#7B6B9E'];
 let cachedApiUrl: string | null = null;
 
@@ -21,14 +21,7 @@ function normalizeApiUrl(url: string) {
 
 async function getApiUrl() {
   if (cachedApiUrl) return cachedApiUrl;
-  const stored = await AsyncStorage.getItem(API_URL_KEY);
-  cachedApiUrl = normalizeApiUrl(stored || DEFAULT_API_URL);
-  return cachedApiUrl;
-}
-
-async function saveApiUrl(url: string) {
-  cachedApiUrl = normalizeApiUrl(url);
-  await AsyncStorage.setItem(API_URL_KEY, cachedApiUrl);
+  cachedApiUrl = normalizeApiUrl(DEFAULT_API_URL);
   return cachedApiUrl;
 }
 
@@ -70,6 +63,16 @@ function mapPeople(locations: ApiLocation[] = [], userId: string): Person[] {
   });
 }
 
+function distanceInMeters(from: Coordinates, to: Coordinates) {
+  const earthRadius = 6371000;
+  const latitudeDelta = (to.latitude - from.latitude) * Math.PI / 180;
+  const longitudeDelta = (to.longitude - from.longitude) * Math.PI / 180;
+  const latitude = from.latitude * Math.PI / 180;
+  const targetLatitude = to.latitude * Math.PI / 180;
+  const haversine = Math.sin(latitudeDelta / 2) ** 2 + Math.sin(longitudeDelta / 2) ** 2 * Math.cos(latitude) * Math.cos(targetLatitude);
+  return earthRadius * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
 function statusColor(status: string): string {
   switch (status) {
     case 'accepted':
@@ -81,6 +84,51 @@ function statusColor(status: string): string {
   }
 }
 
+function todayLabel() {
+  return new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date()).toUpperCase();
+}
+
+function mapHtml(people: Person[], center: Coordinates) {
+  const points = JSON.stringify(people.map((person) => ({
+    latitude: person.latitude,
+    longitude: person.longitude,
+    title: person.isUser ? 'You' : person.name,
+    color: person.color,
+  }))).replace(/</g, '\\u003c');
+  const centerJson = JSON.stringify(center);
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body, #map { width: 100%; height: 100%; margin: 0; padding: 0; }
+    .leaflet-top.leaflet-left { top: 68px; }
+    .leaflet-control-attribution { font-size: 9px; }
+    .marker { width: 18px; height: 18px; border: 3px solid white; border-radius: 50%; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const center = ${centerJson};
+    const points = ${points};
+    const map = L.map('map', { zoomControl: true }).setView([center.latitude, center.longitude], 15);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+    points.forEach((point) => {
+      const icon = L.divIcon({ className: '', html: '<div class="marker" style="background:' + point.color + '"></div>', iconSize: [24, 24], iconAnchor: [12, 12] });
+      L.marker([point.latitude, point.longitude], { icon }).addTo(map).bindPopup(point.title);
+    });
+  </script>
+</body>
+</html>`;
+}
+
 export default function App() {
   const [loadingSession, setLoadingSession] = useState(true);
   const [signedIn, setSignedIn] = useState(false);
@@ -89,9 +137,12 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('home');
   const [sharing, setSharing] = useState(true);
   const [people, setPeople] = useState<Person[]>([]);
+  const [currentCoordinates, setCurrentCoordinates] = useState<Coordinates | null>(null);
+  const [selectedMapPersonId, setSelectedMapPersonId] = useState<string | null>(null);
 
   const tokenRef = useRef('');
   const userIdRef = useRef('');
+  const lastPublishedLocationRef = useRef<Coordinates | null>(null);
 
   useEffect(() => {
     tokenRef.current = token;
@@ -133,7 +184,12 @@ export default function App() {
     const currentUserId = userIdRef.current;
     if (!currentToken || !currentUserId) return;
     const response = await apiRequest<{ locations?: ApiLocation[] }>('/locations', {}, currentToken);
-    setPeople(mapPeople(Array.isArray(response.locations) ? response.locations : [], currentUserId));
+    const nextPeople = mapPeople(Array.isArray(response.locations) ? response.locations : [], currentUserId);
+    setPeople(nextPeople);
+    const currentUserLocation = nextPeople.find((person) => person.isUser);
+    if (currentUserLocation) {
+      setCurrentCoordinates({ latitude: currentUserLocation.latitude, longitude: currentUserLocation.longitude });
+    }
   }
 
   async function completeAuth(response: { token: string; user: User }) {
@@ -170,7 +226,10 @@ export default function App() {
   }, [signedIn]);
 
   useEffect(() => {
-    if (!signedIn || !sharing) return;
+    if (!signedIn || !sharing) {
+      lastPublishedLocationRef.current = null;
+      return;
+    }
     let active = true;
 
     async function startLocationUpdates() {
@@ -185,10 +244,15 @@ export default function App() {
         try {
           const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
           if (!active) return;
+          const coordinates = { latitude: current.coords.latitude, longitude: current.coords.longitude };
+          setCurrentCoordinates(coordinates);
+          const lastPublished = lastPublishedLocationRef.current;
+          if (lastPublished && distanceInMeters(lastPublished, coordinates) < 25) return;
           await apiRequest('/locations', {
             method: 'POST',
-            body: JSON.stringify({ latitude: current.coords.latitude, longitude: current.coords.longitude }),
+            body: JSON.stringify(coordinates),
           }, tokenRef.current);
+          lastPublishedLocationRef.current = coordinates;
         } catch {
           // Location updates are best effort; map refresh continues independently.
         }
@@ -217,6 +281,7 @@ export default function App() {
     setToken('');
     setUser(null);
     setPeople([]);
+    setCurrentCoordinates(null);
     setSignedIn(false);
     setTab('home');
   }
@@ -242,7 +307,7 @@ export default function App() {
 
   if (loadingSession) return <SafeAreaView style={styles.login}><ActivityIndicator color="#176B87" /></SafeAreaView>;
   if (!signedIn) return <Login onAuthenticated={completeAuth} />;
-  return <SafeAreaView style={styles.app}><StatusBar style="dark" />{tab === 'home' && <Home people={people} sharing={sharing} onToggleSharing={toggleSharing} userName={user?.name || 'there'} />}{tab === 'circle' && <Circle people={people} token={token} userId={user?.id || ''} onRefresh={refreshLocations} />}{tab === 'settings' && <Settings user={user} sharing={sharing} onToggleSharing={toggleSharing} onSignOut={signOut} />}<Navigation tab={tab} onChange={setTab} /></SafeAreaView>;
+  return <SafeAreaView style={styles.app}><StatusBar style="dark" />{tab === 'home' && <Home people={people} currentCoordinates={currentCoordinates} selectedPersonId={selectedMapPersonId} onSelectPerson={setSelectedMapPersonId} sharing={sharing} onToggleSharing={toggleSharing} userName={user?.name || 'there'} />}{tab === 'circle' && <Circle people={people} token={token} userId={user?.id || ''} onRefresh={refreshLocations} onSelectFriend={(personId) => { setSelectedMapPersonId(personId); setTab('home'); }} />}{tab === 'settings' && <Settings user={user} sharing={sharing} onToggleSharing={toggleSharing} onSignOut={signOut} />}<Navigation tab={tab} onChange={setTab} /></SafeAreaView>;
 }
 
 function Login({ onAuthenticated }: { onAuthenticated: (response: { token: string; user: User }) => Promise<void> }) {
@@ -253,36 +318,15 @@ function Login({ onAuthenticated }: { onAuthenticated: (response: { token: strin
   const [registering, setRegistering] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-  const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
-
-  useEffect(() => { getApiUrl().then(setApiUrl).catch(() => undefined); }, []);
 
   async function submit() {
     setBusy(true);
     setError('');
-    setNotice('');
     try {
-      await saveApiUrl(apiUrl);
       const response = registering
         ? await apiRequest<{ token: string; user: User }>('/auth/register', { method: 'POST', body: JSON.stringify({ username, name, email: identifier, password }) })
         : await apiRequest<{ token: string; user: User }>('/auth/login', { method: 'POST', body: JSON.stringify({ identifier, password }) });
       await onAuthenticated(response);
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to connect to PingMe');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function testConnection() {
-    setBusy(true);
-    setError('');
-    setNotice('');
-    try {
-      await saveApiUrl(apiUrl);
-      const health = await apiRequest<{ status: string; service: string }>('/health');
-      setNotice(`Connected: ${health.service} (${health.status})`);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to connect to PingMe');
     } finally {
@@ -301,11 +345,6 @@ function Login({ onAuthenticated }: { onAuthenticated: (response: { token: strin
         <Text style={styles.title}>Your people,{'\n'}your place.</Text>
         <Text style={styles.subtitle}>A quieter way to stay connected with the people who matter.</Text>
         <View style={styles.form}>
-          <Text style={styles.label}>API SERVER URL</Text>
-          <TextInput style={styles.input} placeholder="http://192.168.x.x:8080" placeholderTextColor="#8B949D" value={apiUrl} onChangeText={setApiUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
-          <Pressable onPress={testConnection} disabled={busy}>
-            <Text style={styles.link}>Test connection</Text>
-          </Pressable>
           {registering && (
             <>
               <Text style={styles.label}>USERNAME</Text>
@@ -321,7 +360,6 @@ function Login({ onAuthenticated }: { onAuthenticated: (response: { token: strin
           <Pressable style={styles.primary} onPress={submit} disabled={busy}>
             {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{registering ? 'Create account' : 'Sign in securely'}</Text>}
           </Pressable>
-          {Boolean(notice) && <Text style={styles.link}>{notice}</Text>}
           {Boolean(error) && <Text style={styles.error}>{error}</Text>}
           <Pressable onPress={() => setRegistering(!registering)}>
             <Text style={styles.link}>{registering ? 'Already have an account? Sign in' : 'New to PingMe? Create an account'}</Text>
@@ -332,14 +370,17 @@ function Login({ onAuthenticated }: { onAuthenticated: (response: { token: strin
   );
 }
 
-function Home({ people, sharing, onToggleSharing, userName }: { people: Person[]; sharing: boolean; onToggleSharing: (value: boolean) => void; userName: string }) {
-  const me = people.find((person) => person.isUser) || people[0];
-  if (!me) return <View style={styles.emptyState}><Text style={styles.emptyText}>You're signed in, but nobody has a shared location yet. Turn on location sharing to appear on the map.</Text><Switch value={sharing} onValueChange={onToggleSharing} trackColor={{ false: '#D3D8DC', true: '#A9D8C1' }} thumbColor={sharing ? '#2D8B61' : '#fff'} /></View>;
+function Home({ people, currentCoordinates, selectedPersonId, onSelectPerson, sharing, onToggleSharing, userName }: { people: Person[]; currentCoordinates: Coordinates | null; selectedPersonId: string | null; onSelectPerson: (personId: string) => void; sharing: boolean; onToggleSharing: (value: boolean) => void; userName: string }) {
+  const me = people.find((person) => person.isUser);
+  const selectedPerson = people.find((person) => person.id === selectedPersonId);
+  const mapCenter = selectedPerson || (currentCoordinates ? { ...currentCoordinates } : me) || people[0];
+
+  if (!mapCenter) return <View style={styles.emptyState}><Text style={styles.emptyText}>You're signed in, but nobody has a shared location yet. Turn on location sharing to appear on the map.</Text><Switch value={sharing} onValueChange={onToggleSharing} trackColor={{ false: '#D3D8DC', true: '#A9D8C1' }} thumbColor={sharing ? '#2D8B61' : '#fff'} /></View>;
   return (
     <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
       <View style={styles.top}>
         <View>
-          <Text style={styles.eyebrow}>TUESDAY, SEPTEMBER 29</Text>
+          <Text style={styles.eyebrow}>{todayLabel()}</Text>
           <Text style={styles.heading}>Good morning, {userName}.</Text>
         </View>
         <View style={styles.notification}>
@@ -347,22 +388,17 @@ function Home({ people, sharing, onToggleSharing, userName }: { people: Person[]
         </View>
       </View>
       <View style={styles.mapCard}>
-        <MapView
+        <WebView
           style={styles.map}
-          initialRegion={{ latitude: me.latitude, longitude: me.longitude, latitudeDelta: 0.06, longitudeDelta: 0.06 }}
-        >
-          {people.map((person) => (
-            <Marker key={`${person.id}:${person.latitude}:${person.longitude}`} coordinate={{ latitude: person.latitude, longitude: person.longitude }} title={person.isUser ? 'You' : person.name} pinColor={person.color} />
-          ))}
-        </MapView>
+          originWhitelist={['*']}
+          source={{ html: mapHtml(people, mapCenter) }}
+          javaScriptEnabled
+          domStorageEnabled
+          scrollEnabled={false}
+        />
         <View style={styles.mapLabel}>
           <View style={[styles.dot, { backgroundColor: sharing ? '#4BA67A' : '#9BA5B4' }]} />
           <Text style={styles.mapLabelText}>{sharing ? 'Your location is visible' : 'Location sharing is paused'}</Text>
-        </View>
-        <View style={styles.zoom}>
-          <Text style={styles.zoomText}>+</Text>
-          <View style={styles.zoomLine} />
-          <Text style={styles.zoomText}>−</Text>
         </View>
       </View>
       <View style={styles.shareCard}>
@@ -382,13 +418,13 @@ function Home({ people, sharing, onToggleSharing, userName }: { people: Person[]
         </Pressable>
       </View>
       {people.slice(1, 3).map((person) => (
-        <PersonRow key={person.id} person={person} />
+        <PersonRow key={person.id} person={person} onPress={() => onSelectPerson(person.id)} />
       ))}
     </ScrollView>
   );
 }
 
-function Circle({ people, token, userId, onRefresh }: { people: Person[]; token: string; userId: string; onRefresh: () => Promise<void> }) {
+function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: Person[]; token: string; userId: string; onRefresh: () => Promise<void>; onSelectFriend: (personId: string) => void }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<User[]>([]);
   const [requests, setRequests] = useState<FriendRequest[]>([]);
@@ -509,7 +545,7 @@ function Circle({ people, token, userId, onRefresh }: { people: Person[]; token:
         <>
           <Text style={styles.sectionTitle}>Friends</Text>
           {acceptedFriends.map((friend) => (
-            <View key={friend.id} style={styles.person}>
+            <Pressable key={friend.id} style={styles.person} onPress={() => onSelectFriend(friend.id)}>
               <View style={[styles.avatar, { backgroundColor: '#176B87' }]}>
                 <Text style={styles.avatarText}>{friend.name.slice(0, 2).toUpperCase()}</Text>
               </View>
@@ -523,7 +559,7 @@ function Circle({ people, token, userId, onRefresh }: { people: Person[]; token:
                   {friend.locationSharingEnabled ? 'Sharing' : 'Paused'}
                 </Text>
               </View>
-            </View>
+            </Pressable>
           ))}
         </>
       )}
@@ -628,9 +664,9 @@ function Settings({ user, sharing, onToggleSharing, onSignOut }: { user: User | 
   );
 }
 
-function PersonRow({ person, detailed = false }: { person: Person; detailed?: boolean }) {
+function PersonRow({ person, detailed = false, onPress }: { person: Person; detailed?: boolean; onPress?: () => void }) {
   return (
-    <View style={styles.person}>
+    <Pressable style={styles.person} onPress={onPress} disabled={!onPress}>
       <View style={[styles.avatar, { backgroundColor: person.color }]}>
         <Text style={styles.avatarText}>{person.initials}</Text>
       </View>
@@ -641,7 +677,7 @@ function PersonRow({ person, detailed = false }: { person: Person; detailed?: bo
       <View style={styles.personOnline}>
         <View style={styles.onlineDot} />
       </View>
-    </View>
+    </Pressable>
   );
 }
 

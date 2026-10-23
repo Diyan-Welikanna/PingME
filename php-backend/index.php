@@ -176,15 +176,29 @@ if ($method === 'POST' && $path === '/me/location-sharing') {
 
 if ($method === 'GET' && $path === '/locations') {
     $query = $pdo->prepare(
-        'SELECT l.user_id AS userId, u.username, u.name, l.latitude, l.longitude, l.updated_at AS updatedAt
-         FROM locations l JOIN users u ON u.id = l.user_id
+                'SELECT u.id AS userId, u.username, u.name,
+                                COALESCE(l.latitude, h.latitude) AS latitude,
+                                COALESCE(l.longitude, h.longitude) AS longitude,
+                                COALESCE(l.updated_at, h.recorded_at) AS updatedAt
+                 FROM users u
+                 LEFT JOIN locations l ON l.user_id = u.id
+                 LEFT JOIN (
+                         SELECT history.user_id, history.latitude, history.longitude, history.recorded_at
+                         FROM location_history history
+                         INNER JOIN (
+                                 SELECT user_id, MAX(id) AS latest_id
+                                 FROM location_history
+                                 GROUP BY user_id
+                         ) latest ON latest.user_id = history.user_id AND latest.latest_id = history.id
+                 ) h ON h.user_id = u.id
          WHERE u.location_sharing_enabled = 1
-           AND (l.user_id = ? OR EXISTS (
+                     AND (l.user_id IS NOT NULL OR h.user_id IS NOT NULL)
+                     AND (u.id = ? OR EXISTS (
                SELECT 1 FROM friend_requests fr
                WHERE fr.status = \'accepted\'
-                 AND ((fr.sender_id = ? AND fr.receiver_id = l.user_id) OR (fr.receiver_id = ? AND fr.sender_id = l.user_id))
+                                 AND ((fr.sender_id = ? AND fr.receiver_id = u.id) OR (fr.receiver_id = ? AND fr.sender_id = u.id))
            ))
-         ORDER BY l.updated_at DESC'
+                 ORDER BY COALESCE(l.updated_at, h.recorded_at) DESC'
     );
     $query->execute([$userId, $userId, $userId]);
     $locations = $query->fetchAll();
@@ -213,6 +227,19 @@ if ($method === 'POST' && $path === '/locations') {
     $upsert->execute([$userId, $latitude, $longitude]);
     $history = $pdo->prepare('INSERT INTO location_history (user_id, latitude, longitude) VALUES (?, ?, ?)');
     $history->execute([$userId, $latitude, $longitude]);
+    $pruneHistory = $pdo->prepare(
+        'DELETE FROM location_history
+         WHERE user_id = ?
+           AND id NOT IN (
+               SELECT id FROM (
+                   SELECT id FROM location_history
+                   WHERE user_id = ?
+                   ORDER BY recorded_at DESC, id DESC
+                   LIMIT 1
+               ) latest_history
+           )'
+    );
+    $pruneHistory->execute([$userId, $userId]);
     $location = ['userId' => $userId, 'name' => $user['name'], 'latitude' => (float) $latitude, 'longitude' => (float) $longitude, 'updatedAt' => date(DATE_ATOM)];
     jsonResponse(['location' => $location], 201);
 }
