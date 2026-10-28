@@ -11,7 +11,7 @@ type User = { id: string; username: string; email: string; name: string; locatio
 type ApiLocation = { userId: string; username?: string; name: string; latitude: number; longitude: number; updatedAt: string };
 type FriendRequest = { id: string; status: string; senderId: string; senderUsername: string; senderName: string; receiverId: string; receiverUsername: string; receiverName: string; createdAt?: string; respondedAt?: string | null };
 type Coordinates = { latitude: number; longitude: number };
-const DEFAULT_API_URL = (process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8080').replace(/\/$/, '');
+const DEFAULT_API_URL = (process.env.EXPO_PUBLIC_API_URL ).replace(/\/$/, '');
 const colors = ['#E5684A', '#176B87', '#C08B45', '#7B6B9E'];
 let cachedApiUrl: string | null = null;
 

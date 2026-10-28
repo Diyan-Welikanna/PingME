@@ -78,6 +78,9 @@ If the app still uses the previous LAN address, clear PingMe's emulator app data
 
    ```powershell
    npm run api:php
+
+   cd C:\Users\admin\Desktop\PingMe\mobile
+   npx expo start -c
    ```
 
    The PHP API runs at `http://127.0.0.1:8080` and is reachable from devices on the same Wi-Fi using your computer's LAN IP.
