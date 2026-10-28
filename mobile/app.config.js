@@ -4,7 +4,7 @@ module.exports = {
   expo: {
     name: 'PingMe',
     slug: 'pingme',
-    version: '1.0.7',
+    version: '1.2.0',
     orientation: 'portrait',
     userInterfaceStyle: 'light',
     icon: './assets/icon.png',
