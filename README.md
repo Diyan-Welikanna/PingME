@@ -50,7 +50,7 @@ Copy-Item .env.example .env
 Set this value in `mobile/.env`:
 
 ```text
-EXPO_PUBLIC_API_URL=http://10.0.2.2:8080
+EXPO_PUBLIC_API_URL=http://172.197.160.139/pingme
 ```
 
 Then run:
@@ -83,7 +83,7 @@ If the app still uses the previous LAN address, clear PingMe's emulator app data
    npx expo start -c
    ```
 
-   The PHP API runs at `http://127.0.0.1:8080` and is reachable from devices on the same Wi-Fi using your computer's LAN IP.
+   The PHP API is hosted at `http://172.197.160.139/pingme`. For local development, it can also run at `http://127.0.0.1:8080`.
 
 5. Configure the mobile app by copying `mobile/.env.example` to `mobile/.env` and replacing the example IP with the computer's LAN IPv4 address. Then start Expo:
 
@@ -99,7 +99,7 @@ The seeded accounts all use the password `PingMe123!`. Example login: `alex@exam
 
 If the older schema was already imported, run `php-backend/migration_from_previous_schema.sql` once before importing the updated demo data.
 
-Set `EXPO_PUBLIC_API_URL` to the machine's LAN address when testing on a physical device, for example `http://192.168.1.10:8080` while connected to the current Wi-Fi network.
+The mobile app currently uses the hosted API at `http://172.197.160.139/pingme`.
 
 ## MVP scope
 

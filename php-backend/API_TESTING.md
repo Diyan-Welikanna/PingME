@@ -1,14 +1,26 @@
 # PingMe backend API testing
 
-## Which backend to run
+## Hosted API
 
-The mobile app currently uses the PHP API on port `8080`. Run this backend for the complete registration, login, friends, and location workflow.
+The deployed PHP API base URL is:
 
-The repository also contains a separate Node API on port `4000`. It is useful for the lightweight API prototype, but it does not provide the complete friends workflow used by the mobile app.
+```text
+http://172.197.160.139/pingme
+```
 
-## Start the PHP API
+Check the hosted service:
 
-Open a PowerShell terminal at the repository root (`PingMe`), then run:
+```powershell
+Invoke-RestMethod http://172.197.160.139/pingme/health
+```
+
+Use this value for the mobile app:
+
+```text
+EXPO_PUBLIC_API_URL=http://172.197.160.139/pingme
+```
+
+The hosted backend does not require the local PHP server or local MySQL process to be running on the development computer.
 
 ```powershell
 npm install
@@ -50,50 +62,22 @@ To run the separate Node API instead, open another PowerShell terminal at the re
 ```powershell
 npm install --prefix server
 npm run api
-```
-
-The Node API runs at `http://127.0.0.1:4000`. Check it with:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:4000/health
-```
-
-You can also run it directly from the `server` directory:
-
-```powershell
-Set-Location server
-npm run dev
-```
-
-Stop either backend with `Ctrl+C`.
-
-## Configure the mobile app
-
-For a physical phone, make sure the phone and computer are on the same Wi-Fi network, then set the API URL to the computer's current LAN address:
-
-```powershell
-Copy-Item mobile/.env.example mobile/.env
-```
+`
 
 Set this value in `mobile/.env`:
 
 ```text
-EXPO_PUBLIC_API_URL=http://192.168.1.10:8080
+EXPO_PUBLIC_API_URL=http://172.197.160.139/pingme
 ```
 
 Start Expo from the repository root:
 
 ```powershell
-npm run mobile
-```
+cd C:\Users\admin\Desktop\PingMe\mobile
+npx expo start -c
 
-Allow PHP through Windows Firewall on port `8080` when testing from a phone. If the LAN address changes, update `mobile/.env` and restart Expo.
-
-For an Android Studio emulator, use the host alias instead of the computer's LAN IP:
-
-```text
-EXPO_PUBLIC_API_URL=http://10.0.2.2:8080
-```
+=== expo andriod build push
+eas build -p android --profile development
 
 Start Expo from `mobile` with `npm run start`, then press `a` in the Expo terminal.
 

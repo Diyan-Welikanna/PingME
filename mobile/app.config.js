@@ -4,7 +4,7 @@ module.exports = {
   expo: {
     name: 'PingMe',
     slug: 'pingme',
-    version: '1.2.0',
+    version: '1.3.0',
     orientation: 'portrait',
     userInterfaceStyle: 'light',
     icon: './assets/icon.png',
@@ -22,7 +22,7 @@ module.exports = {
     },
     android: {
       icon: './assets/icon.png',
-      usesCleartextTraffic: true,
+      usesCleartextTraffic: false,
       permissions: ['INTERNET', 'ACCESS_NETWORK_STATE', 'ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION'],
       package: 'com.dboy2001.pingme',
       adaptiveIcon: {
