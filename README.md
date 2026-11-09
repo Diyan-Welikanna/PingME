@@ -124,6 +124,11 @@ For a cloud build, use an EAS development or production profile. On Android, all
 may still throttle updates to preserve battery. On iOS, allow `Always` location
 access and keep Background App Refresh enabled. The sharing switch remains the
 user-controlled consent control and stopping sharing unregisters the background task.
+If the upload is reset, retry with the current CLI from the `mobile` directory:
+
+```powershell
+npx eas-cli@latest build --platform android --profile development
+```
 
 ## MVP scope
 

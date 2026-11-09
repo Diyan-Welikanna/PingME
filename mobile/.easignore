@@ -2,3 +2,5 @@ android
 node_modules
 .expo
 dist
+.git
+.env.example

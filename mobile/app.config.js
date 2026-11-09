@@ -34,7 +34,7 @@ module.exports = {
       package: 'com.dboy2001.pingme',
       adaptiveIcon: {
         foregroundImage: './assets/icon.png',
-        backgroundColor: '#E5684A',
+        backgroundColor: '#FFFFFF',
       },
     },
     web: { bundler: 'metro' },

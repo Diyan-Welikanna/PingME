@@ -108,7 +108,7 @@ async function startBackgroundLocationTracking() {
       foregroundService: {
         notificationTitle: 'PingMe location sharing',
         notificationBody: 'Your location is being shared with your trusted circle.',
-        notificationColor: '#E5684A',
+        notificationColor: '#FFFFFF',
       },
     });
   }

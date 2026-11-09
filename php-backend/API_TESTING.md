@@ -77,7 +77,7 @@ cd C:\Users\admin\Desktop\PingMe\mobile
 npx expo start -c
 
 === expo andriod build push
-eas build -p android --profile development
+npx eas-cli@latest build --platform android --profile development
 
 Start Expo from `mobile` with `npm run start`, then press `a` in the Expo terminal.
 
