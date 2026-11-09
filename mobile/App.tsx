@@ -8,15 +8,33 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 
 type Tab = 'home' | 'circle' | 'settings';
-type Person = { id: string; name: string; initials: string; color: string; latitude: number; longitude: number; place: string; updated: string; isUser?: boolean };
-type User = { id: string; username: string; email: string; name: string; locationSharingEnabled?: boolean };
-type ApiLocation = { userId: string; username?: string; name: string; latitude: number; longitude: number; updatedAt: string };
+type AvatarId = `avatar_${'01' | '02' | '03' | '04' | '05' | '06' | '07' | '08' | '09' | '10'}`;
+type Person = { id: string; name: string; initials: string; color: string; avatarId?: AvatarId; latitude: number; longitude: number; place: string; updated: string; isUser?: boolean };
+type User = { id: string; username: string; email: string; name: string; avatarId: AvatarId; locationSharingEnabled?: boolean };
+type ApiLocation = { userId: string; username?: string; name: string; avatarId?: AvatarId; latitude: number; longitude: number; updatedAt: string };
 type FriendRequest = { id: string; status: string; senderId: string; senderUsername: string; senderName: string; receiverId: string; receiverUsername: string; receiverName: string; createdAt?: string; respondedAt?: string | null };
 type Coordinates = { latitude: number; longitude: number };
 const DEFAULT_API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://api.diyan.co.uk/pingme').replace(/\/$/, '');
 const colors = ['#E5684A', '#176B87', '#C08B45', '#7B6B9E'];
 const BACKGROUND_LOCATION_TASK = 'pingme-background-location';
+const avatarImages: Record<AvatarId, number> = {
+  avatar_01: require('./assets/avatars/avatar_01.png'),
+  avatar_02: require('./assets/avatars/avatar_02.png'),
+  avatar_03: require('./assets/avatars/avatar_03.png'),
+  avatar_04: require('./assets/avatars/avatar_04.png'),
+  avatar_05: require('./assets/avatars/avatar_05.png'),
+  avatar_06: require('./assets/avatars/avatar_06.png'),
+  avatar_07: require('./assets/avatars/avatar_07.png'),
+  avatar_08: require('./assets/avatars/avatar_08.png'),
+  avatar_09: require('./assets/avatars/avatar_09.png'),
+  avatar_10: require('./assets/avatars/avatar_10.png'),
+};
+const avatarIds = Object.keys(avatarImages) as AvatarId[];
 let cachedApiUrl: string | null = null;
+
+function avatarUri(avatarId?: AvatarId) {
+  return avatarId ? Image.resolveAssetSource(avatarImages[avatarId]).uri : '';
+}
 
 function normalizeApiUrl(url: string) {
   return url.trim().replace(/\/$/, '');
@@ -128,7 +146,7 @@ function mapPeople(locations: ApiLocation[] = [], userId: string): Person[] {
     const name = typeof location.name === 'string' && location.name.trim() ? location.name.trim() : 'PingMe user';
     const updatedAt = new Date(location.updatedAt);
     if (!location.userId || !Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return [];
-    return [{ id: location.userId, name: location.userId === userId ? 'You' : name, initials: name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(), color: colors[index % colors.length], latitude, longitude, place: 'Shared location', updated: location.userId === userId || Number.isNaN(updatedAt.getTime()) ? 'Just now' : updatedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), isUser: location.userId === userId }];
+    return [{ id: location.userId, name: location.userId === userId ? 'You' : name, initials: name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(), color: colors[index % colors.length], avatarId: location.avatarId, latitude, longitude, place: 'Shared location', updated: location.userId === userId || Number.isNaN(updatedAt.getTime()) ? 'Just now' : updatedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), isUser: location.userId === userId }];
   });
 }
 
@@ -170,6 +188,7 @@ function mapHtml(people: Person[], center: Coordinates) {
     longitude: person.longitude,
     title: person.isUser ? 'You' : person.name,
     color: person.color,
+    avatarUrl: avatarUri(person.avatarId),
   }))).replace(/</g, '\\u003c');
   const centerJson = JSON.stringify(center);
 
@@ -182,7 +201,8 @@ function mapHtml(people: Person[], center: Coordinates) {
     html, body, #map { width: 100%; height: 100%; margin: 0; padding: 0; }
     .leaflet-top.leaflet-left { top: 68px; }
     .leaflet-control-attribution { font-size: 9px; }
-    .marker { width: 18px; height: 18px; border: 3px solid white; border-radius: 50%; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+    .marker { width: 38px; height: 38px; border: 3px solid white; border-radius: 50%; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.35); background: #dce7e8; }
+    .marker img { width: 100%; height: 100%; object-fit: cover; }
   </style>
 </head>
 <body>
@@ -197,7 +217,10 @@ function mapHtml(people: Person[], center: Coordinates) {
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
     points.forEach((point) => {
-      const icon = L.divIcon({ className: '', html: '<div class="marker" style="background:' + point.color + '"></div>', iconSize: [24, 24], iconAnchor: [12, 12] });
+      const markerContent = point.avatarUrl
+        ? '<img src="' + point.avatarUrl + '" alt="" />'
+        : '<div style="width:100%;height:100%;background:' + point.color + '"></div>';
+      const icon = L.divIcon({ className: '', html: '<div class="marker">' + markerContent + '</div>', iconSize: [44, 44], iconAnchor: [22, 22] });
       L.marker([point.latitude, point.longitude], { icon }).addTo(map).bindPopup(point.title);
     });
   </script>
@@ -381,6 +404,7 @@ function AppContent() {
           const current = await Location.getCurrentPositionAsync({});
           await apiRequest('/locations', { method: 'POST', body: JSON.stringify({ latitude: current.coords.latitude, longitude: current.coords.longitude }) }, currentToken);
         }
+
       } else {
         await stopBackgroundLocationTracking();
       }
@@ -391,9 +415,15 @@ function AppContent() {
     }
   }
 
+  function updateUser(updatedUser: User) {
+    setUser(updatedUser);
+    setSharing(Boolean(updatedUser.locationSharingEnabled ?? sharing));
+    setPeople((currentPeople) => currentPeople.map((person) => person.id === updatedUser.id ? { ...person, name: updatedUser.name, avatarId: updatedUser.avatarId } : person));
+  }
+
   if (loadingSession) return <SafeAreaView style={styles.login}><ActivityIndicator color="#176B87" /></SafeAreaView>;
   if (!signedIn) return <Login onAuthenticated={completeAuth} />;
-  return <SafeAreaView style={styles.app}><StatusBar style="dark" />{tab === 'home' && <Home people={people} currentCoordinates={currentCoordinates} selectedPersonId={selectedMapPersonId} onSelectPerson={setSelectedMapPersonId} sharing={sharing} onToggleSharing={toggleSharing} userName={user?.name || 'there'} />}{tab === 'circle' && <Circle people={people} token={token} userId={user?.id || ''} onRefresh={refreshLocations} onSelectFriend={(personId) => { setSelectedMapPersonId(personId); setTab('home'); }} />}{tab === 'settings' && <Settings user={user} sharing={sharing} onToggleSharing={toggleSharing} onSignOut={signOut} />}<Navigation tab={tab} onChange={setTab} /></SafeAreaView>;
+  return <SafeAreaView style={styles.app}><StatusBar style="dark" />{tab === 'home' && <Home people={people} currentCoordinates={currentCoordinates} selectedPersonId={selectedMapPersonId} onSelectPerson={setSelectedMapPersonId} sharing={sharing} onToggleSharing={toggleSharing} userName={user?.name || 'there'} />}{tab === 'circle' && <Circle people={people} token={token} userId={user?.id || ''} onRefresh={refreshLocations} onSelectFriend={(personId) => { setSelectedMapPersonId(personId); setTab('home'); }} />}{tab === 'settings' && <Settings user={user} token={token} sharing={sharing} onToggleSharing={toggleSharing} onUserUpdated={updateUser} onSignOut={signOut} />}<Navigation tab={tab} onChange={setTab} /></SafeAreaView>;
 }
 
 function Login({ onAuthenticated }: { onAuthenticated: (response: { token: string; user: User }) => Promise<void> }) {
@@ -500,6 +530,9 @@ function Home({ people, currentCoordinates, selectedPersonId, onSelectPerson, sh
           source={{ html: mapHtml(people, mapCenter) }}
           javaScriptEnabled
           domStorageEnabled
+          allowFileAccess
+          allowFileAccessFromFileURLs
+          allowingReadAccessToURL="/"
           scrollEnabled={false}
         />
         <View style={styles.mapLabel}>
@@ -728,22 +761,106 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
   );
 }
 
-function Settings({ user, sharing, onToggleSharing, onSignOut }: { user: User | null; sharing: boolean; onToggleSharing: (value: boolean) => void; onSignOut: () => void }) {
+function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSignOut }: { user: User | null; token: string; sharing: boolean; onToggleSharing: (value: boolean) => void; onUserUpdated: (user: User) => void; onSignOut: () => void }) {
   const initials = user?.name ? user.name.split(' ').map((p) => p[0]).join('').slice(0, 2).toUpperCase() : 'AM';
+  const [username, setUsername] = useState(user?.username || '');
+  const [name, setName] = useState(user?.name || '');
+  const [email, setEmail] = useState(user?.email || '');
+  const [avatarId, setAvatarId] = useState<AvatarId>(user?.avatarId || 'avatar_01');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setUsername(user?.username || '');
+    setName(user?.name || '');
+    setEmail(user?.email || '');
+    setAvatarId(user?.avatarId || 'avatar_01');
+  }, [user]);
+
+  async function saveProfile() {
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      const response = await apiRequest<{ user: User }>('/me/profile', {
+        method: 'PATCH',
+        body: JSON.stringify({ username, name, email, avatarId }),
+      }, token);
+      onUserUpdated({ ...response.user, locationSharingEnabled: user?.locationSharingEnabled });
+      setMessage('Profile updated.');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to update profile');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changePassword() {
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      await apiRequest('/me/password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
+      }, token);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setMessage('Password changed.');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to change password');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <Text style={styles.eyebrow}>ACCOUNT</Text>
       <Text style={styles.heading}>Settings</Text>
       <View style={styles.profile}>
-        <View style={[styles.profileAvatar, { backgroundColor: '#E5684A' }]}>
-          <Text style={styles.profileInitials}>{initials}</Text>
-        </View>
+        <Image source={avatarImages[avatarId]} style={styles.profileAvatar} />
         <View style={styles.shareCopy}>
           <Text style={styles.profileName}>{user?.name || 'User'}</Text>
-          <Text style={styles.profileEmail}>{user?.email || ''}</Text>
+          <Text style={styles.profileEmail}>@{user?.username || ''}</Text>
         </View>
-        <Text style={styles.arrow}>›</Text>
+        <Text style={styles.profileEmail}>{user?.email || ''}</Text>
       </View>
+      <Text style={styles.settingsLabel}>PROFILE</Text>
+      <Text style={styles.label}>USERNAME</Text>
+      <TextInput style={styles.input} value={username} onChangeText={setUsername} autoCapitalize="none" />
+      <Text style={styles.label}>NAME</Text>
+      <TextInput style={styles.input} value={name} onChangeText={setName} />
+      <Text style={styles.label}>EMAIL</Text>
+      <TextInput style={styles.input} value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
+      <Text style={styles.label}>PROFILE AVATAR</Text>
+      <View style={styles.avatarGrid}>
+        {avatarIds.map((id) => (
+          <Pressable key={id} style={[styles.avatarChoice, avatarId === id && styles.avatarChoiceSelected]} onPress={() => setAvatarId(id)}>
+            <Image source={avatarImages[id]} style={styles.avatarChoiceImage} />
+          </Pressable>
+        ))}
+      </View>
+      <Pressable style={styles.primary} onPress={saveProfile} disabled={busy}>
+        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Save profile</Text>}
+      </Pressable>
+      <Text style={styles.settingsLabel}>PASSWORD</Text>
+      <Text style={styles.label}>CURRENT PASSWORD</Text>
+      <TextInput style={styles.input} value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry />
+      <Text style={styles.label}>NEW PASSWORD</Text>
+      <TextInput style={styles.input} value={newPassword} onChangeText={setNewPassword} secureTextEntry />
+      <Text style={styles.label}>CONFIRM NEW PASSWORD</Text>
+      <TextInput style={styles.input} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />
+      <Pressable style={styles.secondaryButton} onPress={changePassword} disabled={busy}>
+        <Text style={styles.secondaryButtonText}>Change password</Text>
+      </Pressable>
+      {Boolean(message) && <Text style={styles.notice}>{message}</Text>}
+      {Boolean(error) && <Text style={styles.error}>{error}</Text>}
       <Text style={styles.settingsLabel}>PRIVACY</Text>
       <View style={styles.settingRow}>
         <View style={styles.shareCopy}>
@@ -767,9 +884,7 @@ function Settings({ user, sharing, onToggleSharing, onSignOut }: { user: User | 
 function PersonRow({ person, detailed = false, onPress }: { person: Person; detailed?: boolean; onPress?: () => void }) {
   return (
     <Pressable style={styles.person} onPress={onPress} disabled={!onPress}>
-      <View style={[styles.avatar, { backgroundColor: person.color }]}>
-        <Text style={styles.avatarText}>{person.initials}</Text>
-      </View>
+      {person.avatarId ? <Image source={avatarImages[person.avatarId]} style={styles.avatar} /> : <View style={[styles.avatar, { backgroundColor: person.color }]}><Text style={styles.avatarText}>{person.initials}</Text></View>}
       <View style={styles.personCopy}>
         <Text style={styles.personName}>{person.name}</Text>
         <Text style={styles.personStatus}>{detailed ? `${person.place}  ·  ${person.updated}` : person.updated}</Text>
@@ -819,6 +934,8 @@ const styles = StyleSheet.create({
   passwordToggleText: { color: '#0B6EF3', fontSize: 12, fontWeight: '800' },
   primary: { height: 54, borderRadius: 14, backgroundColor: '#0B6EF3', alignItems: 'center', justifyContent: 'center', marginTop: 24 },
   primaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  secondaryButton: { height: 50, borderRadius: 14, borderWidth: 1, borderColor: '#0B6EF3', alignItems: 'center', justifyContent: 'center', marginTop: 16 },
+  secondaryButtonText: { color: '#0B6EF3', fontSize: 14, fontWeight: '700' },
   error: { color: '#B34D3B', textAlign: 'center', marginTop: 12, fontSize: 12 },
   notice: { color: '#129B83', textAlign: 'center', marginTop: 12, fontSize: 12, fontWeight: '700' },
   link: { color: '#0B6EF3', textAlign: 'center', marginTop: 18, fontSize: 13, fontWeight: '700' },
@@ -848,6 +965,10 @@ const styles = StyleSheet.create({
   person: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
   avatar: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginRight: 11 },
   avatarText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+  avatarGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 4 },
+  avatarChoice: { width: 58, height: 58, borderRadius: 20, padding: 3, borderWidth: 2, borderColor: 'transparent' },
+  avatarChoiceSelected: { borderColor: '#0B6EF3' },
+  avatarChoiceImage: { width: '100%', height: '100%', borderRadius: 16 },
   personCopy: { flex: 1 },
   personName: { color: '#1D2A35', fontSize: 14, fontWeight: '700' },
   personStatus: { color: '#7A8494', fontSize: 12, marginTop: 4 },
@@ -872,7 +993,7 @@ const styles = StyleSheet.create({
   privacyBlock: { backgroundColor: '#fff', borderRadius: 16, padding: 15, marginTop: 4, borderWidth: 1, borderColor: '#E4ECF7' },
   arrow: { color: '#7A8494', fontSize: 26, marginLeft: 10 },
   profile: { backgroundColor: '#fff', borderRadius: 18, padding: 16, marginTop: 22, flexDirection: 'row', alignItems: 'center' },
-  profileAvatar: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  profileAvatar: { width: 48, height: 48, borderRadius: 16, marginRight: 12 },
   profileInitials: { color: '#fff', fontWeight: '800' },
   profileName: { color: '#1D2A35', fontSize: 15, fontWeight: '800' },
   profileEmail: { color: '#7A8494', fontSize: 12, marginTop: 4 },

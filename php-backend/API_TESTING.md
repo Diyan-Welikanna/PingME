@@ -55,6 +55,12 @@ Expected response:
 
 Before testing database routes, create the `pingme` MySQL database, import `php-backend/schema.sql`, and optionally import `php-backend/demo_data.sql`. Copy `php-backend/.env.example` to `php-backend/.env` and set the MySQL password and `PINGME_JWT_SECRET`.
 
+For an existing database, run these migrations once:
+
+```powershell
+mysql -u root -p pingme < php-backend/migration_add_profile_fields.sql
+```
+
 ## Start the Node API
 
 To run the separate Node API instead, open another PowerShell terminal at the repository root:
@@ -114,6 +120,37 @@ Copy `token` from the response and send it as:
 ```text
 Authorization: Bearer YOUR_TOKEN
 ```
+
+### Update profile
+
+`PATCH /me/profile`
+
+```json
+{
+  "username": "newusername",
+  "name": "New Name",
+  "email": "new@example.com",
+  "avatarId": "avatar_03"
+}
+```
+
+`avatarId` must be one of `avatar_01` through `avatar_10`. The images are bundled
+in the mobile app; the backend stores only the selected ID.
+
+### Change password
+
+`POST /me/password`
+
+```json
+{
+  "currentPassword": "PingMe123!",
+  "newPassword": "NewPassword123!",
+  "confirmPassword": "NewPassword123!"
+}
+```
+
+New and changed passwords are stored using bcrypt. Existing seeded passwords are
+already bcrypt hashes.
 
 ## Friend workflow
 

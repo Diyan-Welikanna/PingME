@@ -1,12 +1,12 @@
 USE pingme;
 
 -- Demo login password for all seeded accounts: PingMe123!
-INSERT INTO users (id, username, email, name, password_hash, location_sharing_enabled) VALUES
-    ('11111111-1111-4111-8111-111111111111', 'alexmorgan', 'alex@example.com', 'Alex Morgan', '$2y$10$Ow83t9rOLRd0nz2XivHVvumypkA6dE45gbMi/vJdMPG5V6DC2.ZUW', TRUE),
-    ('22222222-2222-4222-8222-222222222222', 'sanawilliams', 'sana@example.com', 'Sana Williams', '$2y$10$Ow83t9rOLRd0nz2XivHVvumypkA6dE45gbMi/vJdMPG5V6DC2.ZUW', TRUE),
-    ('33333333-3333-4333-8333-333333333333', 'marcochen', 'marco@example.com', 'Marco Chen', '$2y$10$Ow83t9rOLRd0nz2XivHVvumypkA6dE45gbMi/vJdMPG5V6DC2.ZUW', TRUE),
-    ('44444444-4444-4444-8444-444444444444', 'ninapatel', 'nina@example.com', 'Nina Patel', '$2y$10$Ow83t9rOLRd0nz2XivHVvumypkA6dE45gbMi/vJdMPG5V6DC2.ZUW', FALSE)
-ON DUPLICATE KEY UPDATE username = VALUES(username), name = VALUES(name), password_hash = VALUES(password_hash), location_sharing_enabled = VALUES(location_sharing_enabled);
+INSERT INTO users (id, username, email, name, avatar_id, password_hash, location_sharing_enabled) VALUES
+    ('11111111-1111-4111-8111-111111111111', 'alexmorgan', 'alex@example.com', 'Alex Morgan', 'avatar_01', '$2y$10$Ow83t9rOLRd0nz2XivHVvumypkA6dE45gbMi/vJdMPG5V6DC2.ZUW', TRUE),
+    ('22222222-2222-4222-8222-222222222222', 'sanawilliams', 'sana@example.com', 'Sana Williams', 'avatar_02', '$2y$10$Ow83t9rOLRd0nz2XivHVvumypkA6dE45gbMi/vJdMPG5V6DC2.ZUW', TRUE),
+    ('33333333-3333-4333-8333-333333333333', 'marcochen', 'marco@example.com', 'Marco Chen', 'avatar_03', '$2y$10$Ow83t9rOLRd0nz2XivHVvumypkA6dE45gbMi/vJdMPG5V6DC2.ZUW', TRUE),
+    ('44444444-4444-4444-8444-444444444444', 'ninapatel', 'nina@example.com', 'Nina Patel', 'avatar_04', '$2y$10$Ow83t9rOLRd0nz2XivHVvumypkA6dE45gbMi/vJdMPG5V6DC2.ZUW', FALSE)
+ON DUPLICATE KEY UPDATE username = VALUES(username), name = VALUES(name), avatar_id = VALUES(avatar_id), password_hash = VALUES(password_hash), location_sharing_enabled = VALUES(location_sharing_enabled);
 
 INSERT INTO friend_requests (id, sender_id, receiver_id, status, responded_at) VALUES
     ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', 'accepted', CURRENT_TIMESTAMP),

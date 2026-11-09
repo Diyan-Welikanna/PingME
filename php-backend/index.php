@@ -6,7 +6,7 @@ require __DIR__ . '/config.php';
 
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+header('Access-Control-Allow-Methods: GET, POST, PATCH, OPTIONS');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
@@ -15,6 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'];
+$allowedAvatarIds = array_map(static fn (int $number): string => sprintf('avatar_%02d', $number), range(1, 10));
 
 if ($method === 'GET' && $path === '/health') {
     jsonResponse(['status' => 'ok', 'service' => 'pingme-php-api']);
@@ -39,9 +40,9 @@ if ($method === 'POST' && $path === '/auth/register') {
         jsonResponse(['message' => 'Email or username already exists'], 409);
     }
 
-    $user = ['id' => uuid(), 'username' => $username, 'email' => $email, 'name' => $name];
-    $insert = $pdo->prepare('INSERT INTO users (id, username, email, name, password_hash) VALUES (?, ?, ?, ?, ?)');
-    $insert->execute([$user['id'], $user['username'], $user['email'], $user['name'], password_hash($password, PASSWORD_DEFAULT)]);
+    $user = ['id' => uuid(), 'username' => $username, 'email' => $email, 'name' => $name, 'avatarId' => 'avatar_01'];
+    $insert = $pdo->prepare('INSERT INTO users (id, username, email, name, avatar_id, password_hash) VALUES (?, ?, ?, ?, ?, ?)');
+    $insert->execute([$user['id'], $user['username'], $user['email'], $user['name'], $user['avatarId'], password_hash($password, PASSWORD_BCRYPT)]);
     jsonResponse(['token' => tokenFor($user), 'user' => $user], 201);
 }
 
@@ -49,7 +50,7 @@ if ($method === 'POST' && $path === '/auth/login') {
     $body = requestBody();
     $identifier = strtolower(trim((string) ($body['identifier'] ?? $body['email'] ?? '')));
     $password = (string) ($body['password'] ?? '');
-    $query = $pdo->prepare('SELECT id, username, email, name, password_hash FROM users WHERE email = ? OR username = ?');
+    $query = $pdo->prepare('SELECT id, username, email, name, avatar_id, password_hash FROM users WHERE email = ? OR username = ?');
     $query->execute([$identifier, $identifier]);
     $record = $query->fetch();
 
@@ -57,14 +58,14 @@ if ($method === 'POST' && $path === '/auth/login') {
         jsonResponse(['message' => 'Invalid email or password'], 401);
     }
 
-    $user = ['id' => $record['id'], 'username' => $record['username'], 'email' => $record['email'], 'name' => $record['name']];
+    $user = ['id' => $record['id'], 'username' => $record['username'], 'email' => $record['email'], 'name' => $record['name'], 'avatarId' => $record['avatar_id']];
     jsonResponse(['token' => tokenFor($user), 'user' => $user]);
 }
 
 $userId = authenticatedUserId();
 
 if ($method === 'GET' && $path === '/me') {
-    $query = $pdo->prepare('SELECT id, username, email, name, location_sharing_enabled AS locationSharingEnabled FROM users WHERE id = ?');
+    $query = $pdo->prepare('SELECT id, username, email, name, avatar_id AS avatarId, location_sharing_enabled AS locationSharingEnabled FROM users WHERE id = ?');
     $query->execute([$userId]);
     $user = $query->fetch();
     if (!$user) {
@@ -76,6 +77,51 @@ if ($method === 'GET' && $path === '/me') {
     jsonResponse(['user' => $user, 'location' => $locationQuery->fetch() ?: null]);
 }
 
+if ($method === 'PATCH' && $path === '/me/profile') {
+    $body = requestBody();
+    $username = strtolower(trim((string) ($body['username'] ?? '')));
+    $email = strtolower(trim((string) ($body['email'] ?? '')));
+    $name = trim((string) ($body['name'] ?? ''));
+    $avatarId = (string) ($body['avatarId'] ?? '');
+    if (!preg_match('/^[a-z0-9_]{3,40}$/', $username) || !filter_var($email, FILTER_VALIDATE_EMAIL) || $name === '' || strlen($name) > 120 || !in_array($avatarId, $allowedAvatarIds, true)) {
+        jsonResponse(['message' => 'Valid username, name, email, and avatarId are required'], 400);
+    }
+
+    $duplicate = $pdo->prepare('SELECT id FROM users WHERE (email = ? OR username = ?) AND id <> ?');
+    $duplicate->execute([$email, $username, $userId]);
+    if ($duplicate->fetch()) {
+        jsonResponse(['message' => 'Email or username is already in use'], 409);
+    }
+
+    $update = $pdo->prepare('UPDATE users SET username = ?, email = ?, name = ?, avatar_id = ? WHERE id = ?');
+    $update->execute([$username, $email, $name, $avatarId, $userId]);
+    jsonResponse(['user' => ['id' => $userId, 'username' => $username, 'email' => $email, 'name' => $name, 'avatarId' => $avatarId]]);
+}
+
+if ($method === 'POST' && $path === '/me/password') {
+    $body = requestBody();
+    $currentPassword = (string) ($body['currentPassword'] ?? '');
+    $newPassword = (string) ($body['newPassword'] ?? '');
+    $confirmPassword = (string) ($body['confirmPassword'] ?? '');
+    if (strlen($newPassword) < 6) {
+        jsonResponse(['message' => 'New password must be at least 6 characters'], 400);
+    }
+    if ($newPassword !== $confirmPassword) {
+        jsonResponse(['message' => 'New password and confirmation do not match'], 400);
+    }
+
+    $query = $pdo->prepare('SELECT password_hash FROM users WHERE id = ?');
+    $query->execute([$userId]);
+    $record = $query->fetch();
+    if (!$record || !password_verify($currentPassword, $record['password_hash'])) {
+        jsonResponse(['message' => 'Current password is incorrect'], 401);
+    }
+
+    $update = $pdo->prepare('UPDATE users SET password_hash = ? WHERE id = ?');
+    $update->execute([password_hash($newPassword, PASSWORD_BCRYPT), $userId]);
+    jsonResponse(['message' => 'Password changed successfully']);
+}
+
 if ($method === 'GET' && $path === '/users/search') {
     $term = trim((string) ($_GET['q'] ?? ''));
     if (strlen($term) < 2) {
@@ -83,7 +129,7 @@ if ($method === 'GET' && $path === '/users/search') {
     }
     $like = '%' . $term . '%';
     $query = $pdo->prepare(
-        'SELECT id, username, name, email FROM users
+        'SELECT id, username, name, email, avatar_id AS avatarId FROM users
          WHERE id <> ? AND (username LIKE ? OR name LIKE ? OR email LIKE ?)
          ORDER BY username LIMIT 20'
     );
@@ -93,7 +139,7 @@ if ($method === 'GET' && $path === '/users/search') {
 
 if ($method === 'GET' && $path === '/friends') {
     $query = $pdo->prepare(
-        'SELECT u.id, u.username, u.name, u.email, u.location_sharing_enabled AS locationSharingEnabled
+        'SELECT u.id, u.username, u.name, u.email, u.avatar_id AS avatarId, u.location_sharing_enabled AS locationSharingEnabled
          FROM users u
          WHERE EXISTS (
              SELECT 1 FROM friend_requests fr
@@ -176,7 +222,7 @@ if ($method === 'POST' && $path === '/me/location-sharing') {
 
 if ($method === 'GET' && $path === '/locations') {
     $query = $pdo->prepare(
-                'SELECT u.id AS userId, u.username, u.name,
+                'SELECT u.id AS userId, u.username, u.name, u.avatar_id AS avatarId,
                                 COALESCE(l.latitude, h.latitude) AS latitude,
                                 COALESCE(l.longitude, h.longitude) AS longitude,
                                 COALESCE(l.updated_at, h.recorded_at) AS updatedAt
@@ -213,7 +259,7 @@ if ($method === 'POST' && $path === '/locations') {
         jsonResponse(['message' => 'Valid coordinates are required'], 400);
     }
 
-    $userQuery = $pdo->prepare('SELECT name FROM users WHERE id = ?');
+    $userQuery = $pdo->prepare('SELECT name, avatar_id AS avatarId FROM users WHERE id = ?');
     $userQuery->execute([$userId]);
     $user = $userQuery->fetch();
     if (!$user) {
@@ -240,7 +286,7 @@ if ($method === 'POST' && $path === '/locations') {
            )'
     );
     $pruneHistory->execute([$userId, $userId]);
-    $location = ['userId' => $userId, 'name' => $user['name'], 'latitude' => (float) $latitude, 'longitude' => (float) $longitude, 'updatedAt' => date(DATE_ATOM)];
+    $location = ['userId' => $userId, 'name' => $user['name'], 'avatarId' => $user['avatarId'], 'latitude' => (float) $latitude, 'longitude' => (float) $longitude, 'updatedAt' => date(DATE_ATOM)];
     jsonResponse(['location' => $location], 201);
 }
 

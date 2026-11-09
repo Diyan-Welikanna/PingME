@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(40) NOT NULL UNIQUE,
     email VARCHAR(255) NOT NULL UNIQUE,
     name VARCHAR(120) NOT NULL,
+    avatar_id VARCHAR(20) NOT NULL DEFAULT 'avatar_01',
     password_hash VARCHAR(255) NOT NULL,
     location_sharing_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
