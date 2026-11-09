@@ -1,8 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { StatusBar } from 'expo-status-bar';
+import * as TaskManager from 'expo-task-manager';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Pressable, SafeAreaView, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, AppState, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 
 type Tab = 'home' | 'circle' | 'settings';
@@ -13,6 +15,7 @@ type FriendRequest = { id: string; status: string; senderId: string; senderUsern
 type Coordinates = { latitude: number; longitude: number };
 const DEFAULT_API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://api.diyan.co.uk/pingme').replace(/\/$/, '');
 const colors = ['#E5684A', '#176B87', '#C08B45', '#7B6B9E'];
+const BACKGROUND_LOCATION_TASK = 'pingme-background-location';
 let cachedApiUrl: string | null = null;
 
 function normalizeApiUrl(url: string) {
@@ -52,6 +55,72 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, token?: st
   return body as T;
 }
 
+TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
+  if (error) {
+    console.error('PingMe background location task failed', error);
+    return;
+  }
+
+  const locations = (data as { locations?: Location.LocationObject[] } | undefined)?.locations;
+  const latest = locations && locations.length > 0 ? locations[locations.length - 1] : undefined;
+  const token = await AsyncStorage.getItem('pingme-token');
+  const sharing = await AsyncStorage.getItem('pingme-location-sharing');
+  if (!latest || !token || sharing !== 'true') return;
+
+  try {
+    await apiRequest('/locations', {
+      method: 'POST',
+      body: JSON.stringify({
+        latitude: latest.coords.latitude,
+        longitude: latest.coords.longitude,
+      }),
+    }, token);
+  } catch (taskError) {
+    console.error('PingMe could not publish a background location', taskError);
+  }
+});
+
+async function requestLocationPermissions() {
+  let foreground = await Location.getForegroundPermissionsAsync();
+  if (foreground.status !== 'granted') {
+    foreground = await Location.requestForegroundPermissionsAsync();
+  }
+  if (foreground.status !== 'granted') return false;
+
+  let background = await Location.getBackgroundPermissionsAsync();
+  if (background.status !== 'granted') {
+    background = await Location.requestBackgroundPermissionsAsync();
+  }
+  return background.status === 'granted';
+}
+
+async function startBackgroundLocationTracking() {
+  const permissionsGranted = await requestLocationPermissions();
+  if (!permissionsGranted) return false;
+
+  const registered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
+  if (!registered) {
+    await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+      accuracy: Location.Accuracy.Balanced,
+      timeInterval: 10000,
+      distanceInterval: 25,
+      pausesUpdatesAutomatically: false,
+      foregroundService: {
+        notificationTitle: 'PingMe location sharing',
+        notificationBody: 'Your location is being shared with your trusted circle.',
+        notificationColor: '#E5684A',
+      },
+    });
+  }
+  return true;
+}
+
+async function stopBackgroundLocationTracking() {
+  if (await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK)) {
+    await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+  }
+}
+
 function mapPeople(locations: ApiLocation[] = [], userId: string): Person[] {
   return locations.flatMap((location, index) => {
     const latitude = Number(location.latitude);
@@ -86,6 +155,13 @@ function statusColor(status: string): string {
 
 function todayLabel() {
   return new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date()).toUpperCase();
+}
+
+function greetingLabel() {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
 }
 
 function mapHtml(people: Person[], center: Coordinates) {
@@ -130,6 +206,10 @@ function mapHtml(people: Person[], center: Coordinates) {
 }
 
 export default function App() {
+  return <SafeAreaProvider><AppContent /></SafeAreaProvider>;
+}
+
+function AppContent() {
   const [loadingSession, setLoadingSession] = useState(true);
   const [signedIn, setSignedIn] = useState(false);
   const [token, setToken] = useState('');
@@ -164,6 +244,7 @@ export default function App() {
         setToken(storedToken);
         setUser(response.user);
         setSharing(Boolean(response.user.locationSharingEnabled ?? true));
+        await AsyncStorage.setItem('pingme-location-sharing', String(Boolean(response.user.locationSharingEnabled ?? true)));
         setSignedIn(true);
         await refreshLocations().catch(() => setPeople([]));
       } catch {
@@ -199,6 +280,7 @@ export default function App() {
     setToken(response.token);
     setUser(response.user);
     setSharing(Boolean(response.user.locationSharingEnabled ?? true));
+    await AsyncStorage.setItem('pingme-location-sharing', String(Boolean(response.user.locationSharingEnabled ?? true)));
     setSignedIn(true);
     try {
       await refreshLocations();
@@ -228,16 +310,14 @@ export default function App() {
   useEffect(() => {
     if (!signedIn || !sharing) {
       lastPublishedLocationRef.current = null;
+      if (signedIn) stopBackgroundLocationTracking().catch((error) => console.error('PingMe could not stop background location', error));
       return;
     }
     let active = true;
 
     async function startLocationUpdates() {
-      let permission = await Location.getForegroundPermissionsAsync();
-      if (permission.status !== 'granted') {
-        permission = await Location.requestForegroundPermissionsAsync();
-      }
-      if (!active || permission.status !== 'granted') return;
+      const permissionsGranted = await startBackgroundLocationTracking();
+      if (!active || !permissionsGranted) return;
 
       const publishCurrentLocation = async () => {
         if (!active) return;
@@ -278,6 +358,8 @@ export default function App() {
     tokenRef.current = '';
     userIdRef.current = '';
     await AsyncStorage.removeItem('pingme-token');
+    await AsyncStorage.removeItem('pingme-location-sharing');
+    await stopBackgroundLocationTracking().catch((error) => console.error('PingMe could not stop background location', error));
     setToken('');
     setUser(null);
     setPeople([]);
@@ -288,20 +370,24 @@ export default function App() {
 
   async function toggleSharing(value: boolean) {
     setSharing(value);
+    await AsyncStorage.setItem('pingme-location-sharing', String(value));
     const currentToken = tokenRef.current;
     if (!currentToken) return;
     try {
       await apiRequest('/me/location-sharing', { method: 'POST', body: JSON.stringify({ enabled: value }) }, currentToken);
       if (value) {
-        const permission = await Location.requestForegroundPermissionsAsync();
-        if (permission.status === 'granted') {
+        const permissionsGranted = await startBackgroundLocationTracking();
+        if (permissionsGranted) {
           const current = await Location.getCurrentPositionAsync({});
           await apiRequest('/locations', { method: 'POST', body: JSON.stringify({ latitude: current.coords.latitude, longitude: current.coords.longitude }) }, currentToken);
         }
+      } else {
+        await stopBackgroundLocationTracking();
       }
       await refreshLocations();
     } catch {
       setSharing(!value);
+      await AsyncStorage.setItem('pingme-location-sharing', String(!value));
     }
   }
 
@@ -318,14 +404,22 @@ function Login({ onAuthenticated }: { onAuthenticated: (response: { token: strin
   const [registering, setRegistering] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   async function submit() {
     setBusy(true);
     setError('');
+    setNotice('');
     try {
-      const response = registering
-        ? await apiRequest<{ token: string; user: User }>('/auth/register', { method: 'POST', body: JSON.stringify({ username, name, email: identifier, password }) })
-        : await apiRequest<{ token: string; user: User }>('/auth/login', { method: 'POST', body: JSON.stringify({ identifier, password }) });
+      if (registering) {
+        await apiRequest<{ token: string; user: User }>('/auth/register', { method: 'POST', body: JSON.stringify({ username, name, email: identifier, password }) });
+        setRegistering(false);
+        setPassword('');
+        setNotice('Account created. Sign in to continue.');
+        return;
+      }
+      const response = await apiRequest<{ token: string; user: User }>('/auth/login', { method: 'POST', body: JSON.stringify({ identifier, password }) });
       await onAuthenticated(response);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to connect to PingMe');
@@ -337,10 +431,15 @@ function Login({ onAuthenticated }: { onAuthenticated: (response: { token: strin
   return (
     <SafeAreaView style={styles.login}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={styles.loginScroll} keyboardShouldPersistTaps="handled">
-        <View style={styles.logo}>
-          <Text style={styles.logoText}>P</Text>
-        </View>
+      <KeyboardAvoidingView style={styles.keyboard} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <ScrollView contentContainerStyle={styles.loginScroll} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+          <View style={styles.brandLockup}>
+            <Image source={require('./assets/icon.png')} style={styles.logoImage} />
+            <View>
+              <Text style={styles.wordmark}><Text style={styles.wordmarkPing}>Ping</Text><Text style={styles.wordmarkMe}>Me</Text></Text>
+              <Text style={styles.slogan}>STAY CLOSE. STAY CONNECTED.</Text>
+            </View>
+          </View>
         <Text style={styles.eyebrow}>{registering ? 'CREATE YOUR ACCOUNT' : 'WELCOME TO PINGME'}</Text>
         <Text style={styles.title}>Your people,{'\n'}your place.</Text>
         <Text style={styles.subtitle}>A quieter way to stay connected with the people who matter.</Text>
@@ -356,16 +455,23 @@ function Login({ onAuthenticated }: { onAuthenticated: (response: { token: strin
           <Text style={styles.label}>{registering ? 'EMAIL ADDRESS' : 'EMAIL OR USERNAME'}</Text>
           <TextInput style={styles.input} placeholder="you@example.com" placeholderTextColor="#8B949D" value={identifier} onChangeText={setIdentifier} autoCapitalize="none" keyboardType={registering ? 'email-address' : 'default'} />
           <Text style={styles.label}>PASSWORD</Text>
-          <TextInput style={styles.input} placeholder="Enter your password" placeholderTextColor="#8B949D" value={password} onChangeText={setPassword} secureTextEntry />
+          <View style={styles.passwordRow}>
+            <TextInput style={styles.passwordInput} placeholder="Enter your password" placeholderTextColor="#8B949D" value={password} onChangeText={setPassword} secureTextEntry={!showPassword} />
+            <Pressable style={styles.passwordToggle} onPress={() => setShowPassword(!showPassword)}>
+              <Text style={styles.passwordToggleText}>{showPassword ? 'Hide' : 'Show'}</Text>
+            </Pressable>
+          </View>
           <Pressable style={styles.primary} onPress={submit} disabled={busy}>
             {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{registering ? 'Create account' : 'Sign in securely'}</Text>}
           </Pressable>
+          {Boolean(notice) && <Text style={styles.notice}>{notice}</Text>}
           {Boolean(error) && <Text style={styles.error}>{error}</Text>}
           <Pressable onPress={() => setRegistering(!registering)}>
             <Text style={styles.link}>{registering ? 'Already have an account? Sign in' : 'New to PingMe? Create an account'}</Text>
           </Pressable>
         </View>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -381,7 +487,7 @@ function Home({ people, currentCoordinates, selectedPersonId, onSelectPerson, sh
       <View style={styles.top}>
         <View>
           <Text style={styles.eyebrow}>{todayLabel()}</Text>
-          <Text style={styles.heading}>Good morning, {userName}.</Text>
+          <Text style={styles.heading}>{greetingLabel()}, {userName}.</Text>
         </View>
         <View style={styles.notification}>
           <Text style={styles.bell}>⌁</Text>
@@ -430,6 +536,7 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [friends, setFriends] = useState<User[]>([]);
   const [message, setMessage] = useState('');
+  const [showMessage, setShowMessage] = useState(false);
   const [busyId, setBusyId] = useState('');
 
   async function loadRequests() {
@@ -510,8 +617,12 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
           <Text style={styles.eyebrow}>YOUR PEOPLE</Text>
           <Text style={styles.heading}>Trusted circle</Text>
         </View>
-        <View style={styles.countPill}>
-          <Text style={styles.countText}>{acceptedFriends.length} people</Text>
+        <View style={styles.circleActions}>
+          <Pressable style={styles.friendStatusButton} onPress={() => setShowMessage(!showMessage)}>
+            <Text style={styles.friendStatusIcon}>♧</Text>
+            {Boolean(message) && <View style={styles.friendStatusBadge} />}
+          </Pressable>
+          <View style={styles.countPill}><Text style={styles.countText}>{acceptedFriends.length} people</Text></View>
         </View>
       </View>
 
@@ -524,7 +635,7 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
         </Pressable>
       </View>
 
-      {Boolean(message) && <Text style={styles.link}>{message}</Text>}
+      {showMessage && Boolean(message) && <Text style={styles.requestNotice}>{message}</Text>}
 
       {results.map((result) => (
         <View key={result.id} style={styles.person}>
@@ -641,22 +752,11 @@ function Settings({ user, sharing, onToggleSharing, onSignOut }: { user: User | 
         </View>
         <Switch value={sharing} onValueChange={onToggleSharing} trackColor={{ false: '#D3D8DC', true: '#A9D8C1' }} thumbColor={sharing ? '#2D8B61' : '#fff'} />
       </View>
-      <View style={styles.settingRow}>
-        <View style={styles.shareCopy}>
-          <Text style={styles.cardTitle}>Notifications</Text>
-          <Text style={styles.cardSub}>Updates from your circle</Text>
-        </View>
-        <Switch value={true} trackColor={{ false: '#D3D8DC', true: '#A9D8C1' }} thumbColor="#2D8B61" />
-      </View>
       <Text style={styles.settingsLabel}>SUPPORT</Text>
-      <Pressable style={styles.textRow}>
+      <View style={styles.privacyBlock}>
         <Text style={styles.cardTitle}>Privacy and safety</Text>
-        <Text style={styles.arrow}>›</Text>
-      </Pressable>
-      <Pressable style={styles.textRow}>
-        <Text style={styles.cardTitle}>Help center</Text>
-        <Text style={styles.arrow}>›</Text>
-      </Pressable>
+        <Text style={styles.cardSub}>Only accepted friends can see your shared location. You can pause sharing at any time, and location updates are sent only while sharing is enabled.</Text>
+      </View>
       <Pressable style={styles.signOutButton} onPress={onSignOut}>
         <Text style={styles.signOutText}>Sign out</Text>
       </Pressable>
@@ -695,44 +795,56 @@ function Navigation({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void 
 }
 
 const styles = StyleSheet.create({
-  app: { flex: 1, backgroundColor: '#F4F5F1' },
-  login: { flex: 1, backgroundColor: '#F4F5F1' },
-  loginScroll: { padding: 28, paddingBottom: 40, justifyContent: 'center', flexGrow: 1 },
-  logo: { width: 54, height: 54, borderRadius: 18, backgroundColor: '#E5684A', alignItems: 'center', justifyContent: 'center', marginBottom: 32 },
+  app: { flex: 1, backgroundColor: '#F5F8FC' },
+  login: { flex: 1, backgroundColor: '#F8FBFF' },
+  keyboard: { flex: 1 },
+  loginScroll: { paddingHorizontal: 24, paddingTop: 20, paddingBottom: 40, justifyContent: 'center', flexGrow: 1 },
+  brandLockup: { flexDirection: 'row', alignItems: 'center', marginBottom: 28 },
+  logoImage: { width: 72, height: 72, marginRight: 13 },
+  wordmark: { fontSize: 30, lineHeight: 32, fontWeight: '900' },
+  wordmarkPing: { color: '#10224E' },
+  wordmarkMe: { color: '#10BFAF' },
+  slogan: { color: '#10224E', fontSize: 8, letterSpacing: 2, fontWeight: '700', marginTop: 5 },
+  logo: { width: 54, height: 54, borderRadius: 18, backgroundColor: '#0B6EF3', alignItems: 'center', justifyContent: 'center', marginBottom: 32 },
   logoText: { color: '#fff', fontSize: 28, fontWeight: '800' },
-  eyebrow: { color: '#78818D', fontSize: 10, letterSpacing: 1.5, fontWeight: '800' },
-  title: { color: '#1D2A35', fontSize: 42, lineHeight: 45, fontWeight: '800', marginTop: 12 },
+  eyebrow: { color: '#70809A', fontSize: 10, letterSpacing: 1.5, fontWeight: '800' },
+  title: { color: '#10224E', fontSize: 36, lineHeight: 40, fontWeight: '800', marginTop: 12 },
   subtitle: { color: '#66727F', fontSize: 16, lineHeight: 23, marginTop: 18 },
   form: { marginTop: 30 },
   label: { color: '#78818D', fontSize: 10, letterSpacing: 1.1, fontWeight: '800', marginTop: 14, marginBottom: 7 },
-  input: { height: 53, backgroundColor: '#fff', borderColor: '#D6DAD9', borderWidth: 1, borderRadius: 14, paddingHorizontal: 16, color: '#1D2A35', fontSize: 15 },
-  primary: { height: 54, borderRadius: 14, backgroundColor: '#1D2A35', alignItems: 'center', justifyContent: 'center', marginTop: 24 },
+  input: { height: 53, backgroundColor: '#fff', borderColor: '#D5E0F0', borderWidth: 1, borderRadius: 14, paddingHorizontal: 16, color: '#10224E', fontSize: 15 },
+  passwordRow: { height: 53, backgroundColor: '#fff', borderColor: '#D5E0F0', borderWidth: 1, borderRadius: 14, flexDirection: 'row', alignItems: 'center' },
+  passwordInput: { flex: 1, height: 51, paddingHorizontal: 16, color: '#10224E', fontSize: 15 },
+  passwordToggle: { paddingHorizontal: 14, paddingVertical: 10 },
+  passwordToggleText: { color: '#0B6EF3', fontSize: 12, fontWeight: '800' },
+  primary: { height: 54, borderRadius: 14, backgroundColor: '#0B6EF3', alignItems: 'center', justifyContent: 'center', marginTop: 24 },
   primaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   error: { color: '#B34D3B', textAlign: 'center', marginTop: 12, fontSize: 12 },
-  link: { color: '#176B87', textAlign: 'center', marginTop: 18, fontSize: 13, fontWeight: '700' },
+  notice: { color: '#129B83', textAlign: 'center', marginTop: 12, fontSize: 12, fontWeight: '700' },
+  link: { color: '#0B6EF3', textAlign: 'center', marginTop: 18, fontSize: 13, fontWeight: '700' },
   footer: { color: '#99A1A8', fontSize: 11, textAlign: 'center', position: 'absolute', bottom: 34, left: 28, right: 28 },
-  scroll: { padding: 20, paddingBottom: 30 },
-  top: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', paddingTop: 15, marginBottom: 20 },
-  heading: { color: '#1D2A35', fontSize: 25, fontWeight: '800', marginTop: 6 },
-  notification: { width: 40, height: 40, borderRadius: 14, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
-  bell: { color: '#176B87', fontSize: 25, transform: [{ rotate: '-30deg' }] },
-  mapCard: { height: 285, borderRadius: 22, overflow: 'hidden', position: 'relative', backgroundColor: '#DCE7E8' },
+  scroll: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 34 },
+  top: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', paddingTop: 8, marginBottom: 18 },
+  heading: { color: '#10224E', fontSize: 24, lineHeight: 30, fontWeight: '800', marginTop: 6, flexShrink: 1 },
+  notification: { width: 40, height: 40, borderRadius: 14, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', marginLeft: 12 },
+  bell: { color: '#0B6EF3', fontSize: 25, transform: [{ rotate: '-30deg' }] },
+  mapCard: { height: 365, borderRadius: 22, overflow: 'hidden', position: 'relative', backgroundColor: '#DCE7E8' },
   map: { flex: 1 },
   mapLabel: { position: 'absolute', left: 14, top: 14, backgroundColor: 'rgba(255,255,255,0.94)', borderRadius: 18, paddingVertical: 9, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 7 },
   dot: { width: 8, height: 8, borderRadius: 4 },
-  mapLabelText: { color: '#1D2A35', fontSize: 11, fontWeight: '700' },
+  mapLabelText: { color: '#10224E', fontSize: 11, fontWeight: '700' },
   zoom: { position: 'absolute', right: 13, bottom: 13, backgroundColor: '#fff', borderRadius: 12, alignItems: 'center', paddingVertical: 2, width: 34 },
   zoomText: { color: '#176B87', fontSize: 20, lineHeight: 25 },
   zoomLine: { height: 1, backgroundColor: '#E4E7E6', width: 20 },
-  shareCard: { backgroundColor: '#fff', borderRadius: 18, padding: 15, marginTop: 14, flexDirection: 'row', alignItems: 'center' },
-  shareIcon: { width: 39, height: 39, borderRadius: 13, backgroundColor: '#E8F2EF', alignItems: 'center', justifyContent: 'center', marginRight: 11 },
-  shareIconText: { color: '#2D8B61', fontSize: 22 },
+  shareCard: { backgroundColor: '#fff', borderRadius: 18, padding: 15, marginTop: 14, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#E4ECF7' },
+  shareIcon: { width: 39, height: 39, borderRadius: 13, backgroundColor: '#E8F4FF', alignItems: 'center', justifyContent: 'center', marginRight: 11 },
+  shareIconText: { color: '#0B6EF3', fontSize: 22 },
   shareCopy: { flex: 1 },
-  cardTitle: { color: '#1D2A35', fontSize: 14, fontWeight: '700' },
+  cardTitle: { color: '#10224E', fontSize: 14, fontWeight: '700' },
   cardSub: { color: '#7A8494', fontSize: 12, marginTop: 4 },
   sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 25, marginBottom: 9 },
   sectionTitle: { color: '#1D2A35', fontSize: 16, fontWeight: '800', marginTop: 22, marginBottom: 10 },
-  seeAll: { color: '#176B87', fontSize: 12, fontWeight: '700' },
+  seeAll: { color: '#0B6EF3', fontSize: 12, fontWeight: '700' },
   person: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
   avatar: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginRight: 11 },
   avatarText: { color: '#fff', fontSize: 12, fontWeight: '800' },
@@ -745,13 +857,19 @@ const styles = StyleSheet.create({
   navItem: { alignItems: 'center', width: 90 },
   navIcon: { color: '#A0A8AF', fontSize: 22, height: 27 },
   navLabel: { color: '#A0A8AF', fontSize: 10, fontWeight: '700', marginTop: 2 },
-  navActive: { color: '#176B87' },
+  navActive: { color: '#0B6EF3' },
   countPill: { backgroundColor: '#E8F2EF', borderRadius: 14, paddingHorizontal: 11, paddingVertical: 7 },
   countText: { color: '#2D8B61', fontSize: 11, fontWeight: '700' },
+  circleActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  friendStatusButton: { width: 36, height: 36, borderRadius: 12, backgroundColor: '#E8F4FF', alignItems: 'center', justifyContent: 'center', position: 'relative' },
+  friendStatusIcon: { color: '#0B6EF3', fontSize: 20, fontWeight: '800' },
+  friendStatusBadge: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#10BFAF', position: 'absolute', right: 6, top: 5 },
+  requestNotice: { color: '#0B6EF3', backgroundColor: '#E8F4FF', borderRadius: 12, padding: 10, fontSize: 12, fontWeight: '700', marginTop: 12 },
   pageIntro: { color: '#7A8494', fontSize: 14, lineHeight: 20, marginBottom: 18 },
   invite: { backgroundColor: '#1D2A35', borderRadius: 18, padding: 15, flexDirection: 'row', alignItems: 'center', marginBottom: 18 },
   inviteIcon: { width: 38, height: 38, borderRadius: 13, backgroundColor: '#36505C', alignItems: 'center', justifyContent: 'center', marginRight: 11 },
   inviteIconText: { color: '#fff', fontSize: 22 },
+  privacyBlock: { backgroundColor: '#fff', borderRadius: 16, padding: 15, marginTop: 4, borderWidth: 1, borderColor: '#E4ECF7' },
   arrow: { color: '#7A8494', fontSize: 26, marginLeft: 10 },
   profile: { backgroundColor: '#fff', borderRadius: 18, padding: 16, marginTop: 22, flexDirection: 'row', alignItems: 'center' },
   profileAvatar: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginRight: 12 },

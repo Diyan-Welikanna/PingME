@@ -1,10 +1,16 @@
-const plugins = ['expo-location', 'expo-font'];
+const plugins = [
+  ['expo-location', {
+    isAndroidBackgroundLocationEnabled: true,
+    isIosBackgroundLocationEnabled: true,
+  }],
+  'expo-font',
+];
 
 module.exports = {
   expo: {
     name: 'PingMe',
     slug: 'pingme',
-    version: '1.3.0',
+    version: '1.3.1',
     orientation: 'portrait',
     userInterfaceStyle: 'light',
     icon: './assets/icon.png',
@@ -13,6 +19,7 @@ module.exports = {
       supportsTablet: true,
       infoPlist: {
         NSLocationWhenInUseUsageDescription: 'PingMe uses your location only while you choose to share it with your trusted contacts.',
+        NSLocationAlwaysAndWhenInUseUsageDescription: 'PingMe shares your location in the background only while you choose to share it with your trusted contacts.',
         NSLocalNetworkUsageDescription: 'PingMe uses your local network to reach the development API running on your computer.',
         NSAppTransportSecurity: {
           NSAllowsArbitraryLoads: true,

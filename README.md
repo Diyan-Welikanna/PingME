@@ -101,6 +101,30 @@ If the older schema was already imported, run `php-backend/migration_from_previo
 
 The mobile app currently uses the hosted API at `http://172.197.160.139/pingme`.
 
+## Background location sharing
+
+When location sharing is enabled, PingMe registers a native background location task
+that publishes a new location after about 25 metres of movement or 10 seconds. The
+task runs only for the signed-in user and sends locations to the API over the same
+authenticated endpoint as foreground updates.
+
+Background location is not reliable in Expo Go, especially on Android. Build a
+development or production app so the native permissions and foreground service are
+included:
+
+```powershell
+cd mobile
+npx expo run:android
+# or
+npx expo run:ios
+```
+
+For a cloud build, use an EAS development or production profile. On Android, allow
+`All the time` location access when prompted and do not force-stop the app; Android
+may still throttle updates to preserve battery. On iOS, allow `Always` location
+access and keep Background App Refresh enabled. The sharing switch remains the
+user-controlled consent control and stopping sharing unregisters the background task.
+
 ## MVP scope
 
 - Demo registration/login flow with JWT sessions
