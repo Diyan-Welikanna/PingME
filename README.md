@@ -124,6 +124,10 @@ For a cloud build, use an EAS development or production profile. On Android, all
 may still throttle updates to preserve battery. On iOS, allow `Always` location
 access and keep Background App Refresh enabled. The sharing switch remains the
 user-controlled consent control and stopping sharing unregisters the background task.
+The Android foreground-service notification also has a **Stop sharing** action. It
+disables sharing on the server, stops the location service and closes the app
+without signing the user out. Android keeps the notification non-dismissible while
+location tracking is active, as required for a foreground location service.
 If the upload is reset, retry with the current CLI from the `mobile` directory:
 
 ```powershell

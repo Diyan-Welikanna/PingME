@@ -14,6 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+$path = preg_replace('#^/pingme(?=/|$)#', '', $path) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'];
 $allowedAvatarIds = array_map(static fn (int $number): string => sprintf('avatar_%02d', $number), range(1, 10));
 
@@ -154,8 +155,8 @@ if ($method === 'GET' && $path === '/friends') {
 if ($method === 'GET' && $path === '/friend-requests') {
     $query = $pdo->prepare(
         'SELECT fr.id, fr.status, fr.created_at AS createdAt, fr.responded_at AS respondedAt,
-                s.id AS senderId, s.username AS senderUsername, s.name AS senderName,
-                r.id AS receiverId, r.username AS receiverUsername, r.name AS receiverName
+                s.id AS senderId, s.username AS senderUsername, s.name AS senderName, s.avatar_id AS senderAvatarId,
+                r.id AS receiverId, r.username AS receiverUsername, r.name AS receiverName, r.avatar_id AS receiverAvatarId
          FROM friend_requests fr
          JOIN users s ON s.id = fr.sender_id
          JOIN users r ON r.id = fr.receiver_id
@@ -209,6 +210,20 @@ if (preg_match('#^/friend-requests/([^/]+)/(accept|decline)$#', $path, $matches)
     jsonResponse(['message' => "Friend request {$decision}"]);
 }
 
+if (preg_match('#^/friends/([^/]+)/remove$#', $path, $matches) && $method === 'POST') {
+    $friendId = $matches[1];
+    $delete = $pdo->prepare(
+        'DELETE FROM friend_requests
+         WHERE status = \'accepted\'
+           AND ((sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?))'
+    );
+    $delete->execute([$userId, $friendId, $friendId, $userId]);
+    if ($delete->rowCount() === 0) {
+        jsonResponse(['message' => 'Accepted friendship not found'], 404);
+    }
+    jsonResponse(['message' => 'Friend removed']);
+}
+
 if ($method === 'POST' && $path === '/me/location-sharing') {
     $body = requestBody();
     $enabled = filter_var($body['enabled'] ?? null, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
@@ -223,6 +238,7 @@ if ($method === 'POST' && $path === '/me/location-sharing') {
 if ($method === 'GET' && $path === '/locations') {
     $query = $pdo->prepare(
                 'SELECT u.id AS userId, u.username, u.name, u.avatar_id AS avatarId,
+                                        u.location_sharing_enabled AS locationSharingEnabled,
                                 COALESCE(l.latitude, h.latitude) AS latitude,
                                 COALESCE(l.longitude, h.longitude) AS longitude,
                                 COALESCE(l.updated_at, h.recorded_at) AS updatedAt
@@ -237,8 +253,7 @@ if ($method === 'GET' && $path === '/locations') {
                                  GROUP BY user_id
                          ) latest ON latest.user_id = history.user_id AND latest.latest_id = history.id
                  ) h ON h.user_id = u.id
-         WHERE u.location_sharing_enabled = 1
-                     AND (l.user_id IS NOT NULL OR h.user_id IS NOT NULL)
+         WHERE (l.user_id IS NOT NULL OR h.user_id IS NOT NULL)
                      AND (u.id = ? OR EXISTS (
                SELECT 1 FROM friend_requests fr
                WHERE fr.status = \'accepted\'

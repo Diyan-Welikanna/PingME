@@ -3,6 +3,7 @@ const plugins = [
     isAndroidBackgroundLocationEnabled: true,
     isIosBackgroundLocationEnabled: true,
   }],
+  './plugins/withLocationNotificationAction',
   'expo-font',
 ];
 
@@ -10,6 +11,7 @@ module.exports = {
   expo: {
     name: 'PingMe',
     slug: 'pingme',
+    scheme: 'pingme',
     version: '1.3.1',
     orientation: 'portrait',
     userInterfaceStyle: 'light',
@@ -33,7 +35,7 @@ module.exports = {
       permissions: ['INTERNET', 'ACCESS_NETWORK_STATE', 'ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION'],
       package: 'com.dboy2001.pingme',
       adaptiveIcon: {
-        foregroundImage: './assets/icon.png',
+        foregroundImage: './assets/icon-foreground.png',
         backgroundColor: '#FFFFFF',
       },
     },

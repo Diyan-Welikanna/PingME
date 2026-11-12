@@ -3,20 +3,22 @@ import * as Location from 'expo-location';
 import { StatusBar } from 'expo-status-bar';
 import * as TaskManager from 'expo-task-manager';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Animated, AppState, BackHandler, Easing, Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
+import { avatarData } from './avatarData';
 
 type Tab = 'home' | 'circle' | 'settings';
 type AvatarId = `avatar_${'01' | '02' | '03' | '04' | '05' | '06' | '07' | '08' | '09' | '10'}`;
-type Person = { id: string; name: string; initials: string; color: string; avatarId?: AvatarId; latitude: number; longitude: number; place: string; updated: string; isUser?: boolean };
+type Person = { id: string; name: string; initials: string; color: string; avatarId?: AvatarId; latitude: number; longitude: number; place: string; updated: string; locationSharingEnabled: boolean; isUser?: boolean };
 type User = { id: string; username: string; email: string; name: string; avatarId: AvatarId; locationSharingEnabled?: boolean };
-type ApiLocation = { userId: string; username?: string; name: string; avatarId?: AvatarId; latitude: number; longitude: number; updatedAt: string };
-type FriendRequest = { id: string; status: string; senderId: string; senderUsername: string; senderName: string; receiverId: string; receiverUsername: string; receiverName: string; createdAt?: string; respondedAt?: string | null };
+type ApiLocation = { userId: string; username?: string; name: string; avatarId?: AvatarId; latitude: number; longitude: number; updatedAt: string; locationSharingEnabled?: boolean | number | string };
+type FriendRequest = { id: string; status: string; senderId: string; senderUsername: string; senderName: string; senderAvatarId?: AvatarId; receiverId: string; receiverUsername: string; receiverName: string; receiverAvatarId?: AvatarId; createdAt?: string; respondedAt?: string | null };
 type Coordinates = { latitude: number; longitude: number };
 const DEFAULT_API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://api.diyan.co.uk/pingme').replace(/\/$/, '');
 const colors = ['#E5684A', '#176B87', '#C08B45', '#7B6B9E'];
 const BACKGROUND_LOCATION_TASK = 'pingme-background-location';
+const GENERIC_ERROR = 'Something went wrong. Please try again.';
 const avatarImages: Record<AvatarId, number> = {
   avatar_01: require('./assets/avatars/avatar_01.png'),
   avatar_02: require('./assets/avatars/avatar_02.png'),
@@ -33,7 +35,7 @@ const avatarIds = Object.keys(avatarImages) as AvatarId[];
 let cachedApiUrl: string | null = null;
 
 function avatarUri(avatarId?: AvatarId) {
-  return avatarId ? Image.resolveAssetSource(avatarImages[avatarId]).uri : '';
+  return avatarId ? avatarData[avatarId] : '';
 }
 
 function normalizeApiUrl(url: string) {
@@ -56,9 +58,8 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, token?: st
   let response: Response;
   try {
     response = await fetch(`${apiUrl}${path}`, { ...options, headers, signal: controller.signal });
-  } catch (error) {
-    const detail = error instanceof Error ? (error.name === 'AbortError' ? 'timed out after 10s' : error.message) : 'network request failed';
-    throw new Error(`Cannot reach PingMe API at ${apiUrl}${path} (${detail}). Use the same URL that works in Postman, keep PHP running on port 8080, and rebuild the app after HTTP/cleartext changes.`);
+  } catch {
+    throw new Error(GENERIC_ERROR);
   } finally {
     clearTimeout(timer);
   }
@@ -67,9 +68,9 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, token?: st
   try {
     body = text ? JSON.parse(text) : ({} as { message?: string } & T);
   } catch {
-    throw new Error(`PingMe API returned an invalid response (${response.status})`);
+    throw new Error(GENERIC_ERROR);
   }
-  if (!response.ok) throw new Error(body.message || 'Request failed');
+  if (!response.ok) throw new Error(GENERIC_ERROR);
   return body as T;
 }
 
@@ -146,7 +147,9 @@ function mapPeople(locations: ApiLocation[] = [], userId: string): Person[] {
     const name = typeof location.name === 'string' && location.name.trim() ? location.name.trim() : 'PingMe user';
     const updatedAt = new Date(location.updatedAt);
     if (!location.userId || !Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return [];
-    return [{ id: location.userId, name: location.userId === userId ? 'You' : name, initials: name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(), color: colors[index % colors.length], avatarId: location.avatarId, latitude, longitude, place: 'Shared location', updated: location.userId === userId || Number.isNaN(updatedAt.getTime()) ? 'Just now' : updatedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), isUser: location.userId === userId }];
+    const isUser = location.userId === userId;
+    const isSharing = location.locationSharingEnabled !== false && location.locationSharingEnabled !== 0 && location.locationSharingEnabled !== '0';
+    return [{ id: location.userId, name: isUser ? 'You' : name, initials: name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(), color: colors[index % colors.length], avatarId: location.avatarId, latitude, longitude, place: 'Shared location', updated: isUser || isSharing || Number.isNaN(updatedAt.getTime()) ? 'Live now' : updatedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), locationSharingEnabled: isSharing, isUser }];
   });
 }
 
@@ -242,6 +245,7 @@ function AppContent() {
   const [people, setPeople] = useState<Person[]>([]);
   const [currentCoordinates, setCurrentCoordinates] = useState<Coordinates | null>(null);
   const [selectedMapPersonId, setSelectedMapPersonId] = useState<string | null>(null);
+  const [toast, setToast] = useState('');
 
   const tokenRef = useRef('');
   const userIdRef = useRef('');
@@ -254,6 +258,35 @@ function AppContent() {
   useEffect(() => {
     userIdRef.current = user?.id || '';
   }, [user?.id]);
+
+  useEffect(() => {
+    const stopSharingFromNotification = async () => {
+      try {
+        const currentToken = tokenRef.current || await AsyncStorage.getItem('pingme-token');
+        if (!currentToken) return;
+        await apiRequest('/me/location-sharing', {
+          method: 'POST',
+          body: JSON.stringify({ enabled: false }),
+        }, currentToken);
+        await AsyncStorage.setItem('pingme-location-sharing', 'false');
+        await stopBackgroundLocationTracking();
+        setSharing(false);
+        BackHandler.exitApp();
+      } catch (error) {
+        console.error('PingMe could not stop sharing from notification', error);
+      }
+    };
+
+    const handleUrl = ({ url }: { url: string }) => {
+      if (url === 'pingme://stop-sharing') stopSharingFromNotification().catch((error) => console.error('PingMe notification action failed', error));
+    };
+    const subscription = Linking.addEventListener('url', handleUrl);
+    Linking.getInitialURL().then((url) => {
+      if (url === 'pingme://stop-sharing') return stopSharingFromNotification();
+      return undefined;
+    }).catch((error) => console.error('PingMe could not read notification action', error));
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -269,7 +302,7 @@ function AppContent() {
         setSharing(Boolean(response.user.locationSharingEnabled ?? true));
         await AsyncStorage.setItem('pingme-location-sharing', String(Boolean(response.user.locationSharingEnabled ?? true)));
         setSignedIn(true);
-        await refreshLocations().catch(() => setPeople([]));
+        await refreshLocations().catch(() => undefined);
       } catch {
         if (active) await signOut();
       } finally {
@@ -308,7 +341,7 @@ function AppContent() {
     try {
       await refreshLocations();
     } catch {
-      setPeople([]);
+      // The signed-in state is usable even when the first location refresh is unavailable.
     }
   }
 
@@ -415,6 +448,10 @@ function AppContent() {
     }
   }
 
+  function notify(message: string) {
+    setToast(message);
+  }
+
   function updateUser(updatedUser: User) {
     setUser(updatedUser);
     setSharing(Boolean(updatedUser.locationSharingEnabled ?? sharing));
@@ -423,7 +460,25 @@ function AppContent() {
 
   if (loadingSession) return <SafeAreaView style={styles.login}><ActivityIndicator color="#176B87" /></SafeAreaView>;
   if (!signedIn) return <Login onAuthenticated={completeAuth} />;
-  return <SafeAreaView style={styles.app}><StatusBar style="dark" />{tab === 'home' && <Home people={people} currentCoordinates={currentCoordinates} selectedPersonId={selectedMapPersonId} onSelectPerson={setSelectedMapPersonId} sharing={sharing} onToggleSharing={toggleSharing} userName={user?.name || 'there'} />}{tab === 'circle' && <Circle people={people} token={token} userId={user?.id || ''} onRefresh={refreshLocations} onSelectFriend={(personId) => { setSelectedMapPersonId(personId); setTab('home'); }} />}{tab === 'settings' && <Settings user={user} token={token} sharing={sharing} onToggleSharing={toggleSharing} onUserUpdated={updateUser} onSignOut={signOut} />}<Navigation tab={tab} onChange={setTab} /></SafeAreaView>;
+  return <SafeAreaView style={styles.app}><StatusBar style="dark" />{tab === 'home' && <Home people={people} currentCoordinates={currentCoordinates} selectedPersonId={selectedMapPersonId} onSelectPerson={setSelectedMapPersonId} sharing={sharing} onToggleSharing={toggleSharing} userName={user?.name || 'there'} />}{tab === 'circle' && <Circle people={people} token={token} userId={user?.id || ''} onRefresh={refreshLocations} onSelectFriend={(personId) => { setSelectedMapPersonId(personId); setTab('home'); }} onNotify={notify} />}{tab === 'settings' && <Settings user={user} token={token} sharing={sharing} onToggleSharing={toggleSharing} onUserUpdated={updateUser} onSignOut={signOut} onNotify={notify} />}<Notice message={toast} onDismiss={() => setToast('')} /><Navigation tab={tab} onChange={setTab} /></SafeAreaView>;
+}
+
+function Notice({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  const offset = useRef(new Animated.Value(-90)).current;
+
+  useEffect(() => {
+    if (!message) return;
+    Animated.timing(offset, { toValue: 0, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+    const timer = setTimeout(() => {
+      Animated.timing(offset, { toValue: -90, duration: 220, useNativeDriver: true }).start(({ finished }) => {
+        if (finished) onDismiss();
+      });
+    }, 2800);
+    return () => clearTimeout(timer);
+  }, [message, offset, onDismiss]);
+
+  if (!message) return null;
+  return <Animated.View style={[styles.noticeToast, { transform: [{ translateY: offset }] }]}><Text style={styles.noticeToastText}>{message}</Text></Animated.View>;
 }
 
 function Login({ onAuthenticated }: { onAuthenticated: (response: { token: string; user: User }) => Promise<void> }) {
@@ -452,7 +507,7 @@ function Login({ onAuthenticated }: { onAuthenticated: (response: { token: strin
       const response = await apiRequest<{ token: string; user: User }>('/auth/login', { method: 'POST', body: JSON.stringify({ identifier, password }) });
       await onAuthenticated(response);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to connect to PingMe');
+      setError(GENERIC_ERROR);
     } finally {
       setBusy(false);
     }
@@ -513,7 +568,7 @@ function Home({ people, currentCoordinates, selectedPersonId, onSelectPerson, sh
 
   if (!mapCenter) return <View style={styles.emptyState}><Text style={styles.emptyText}>You're signed in, but nobody has a shared location yet. Turn on location sharing to appear on the map.</Text><Switch value={sharing} onValueChange={onToggleSharing} trackColor={{ false: '#D3D8DC', true: '#A9D8C1' }} thumbColor={sharing ? '#2D8B61' : '#fff'} /></View>;
   return (
-    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} disableScrollViewPanResponder>
       <View style={styles.top}>
         <View>
           <Text style={styles.eyebrow}>{todayLabel()}</Text>
@@ -533,43 +588,34 @@ function Home({ people, currentCoordinates, selectedPersonId, onSelectPerson, sh
           allowFileAccess
           allowFileAccessFromFileURLs
           allowingReadAccessToURL="/"
-          scrollEnabled={false}
+          scrollEnabled
+          nestedScrollEnabled
         />
-        <View style={styles.mapLabel}>
+        <Pressable style={styles.mapLabel} onPress={() => me && onSelectPerson(me.id)}>
           <View style={[styles.dot, { backgroundColor: sharing ? '#4BA67A' : '#9BA5B4' }]} />
-          <Text style={styles.mapLabelText}>{sharing ? 'Your location is visible' : 'Location sharing is paused'}</Text>
-        </View>
-      </View>
-      <View style={styles.shareCard}>
-        <View style={styles.shareIcon}>
-          <Text style={styles.shareIconText}>⌖</Text>
-        </View>
-        <View style={styles.shareCopy}>
-          <Text style={styles.cardTitle}>Share my location</Text>
-          <Text style={styles.cardSub}>{sharing ? 'Your circle can see where you are.' : 'Your location is currently private.'}</Text>
-        </View>
-        <Switch value={sharing} onValueChange={onToggleSharing} trackColor={{ false: '#D3D8DC', true: '#A9D8C1' }} thumbColor={sharing ? '#2D8B61' : '#fff'} />
+          <Text style={styles.mapLabelText}>{sharing ? 'Your location is visible' : 'Your location is private'}</Text>
+        </Pressable>
       </View>
       <View style={styles.sectionRow}>
         <Text style={styles.sectionTitle}>Your circle</Text>
-        <Pressable>
-          <Text style={styles.seeAll}>See all</Text>
-        </Pressable>
       </View>
-      {people.slice(1, 3).map((person) => (
-        <PersonRow key={person.id} person={person} onPress={() => onSelectPerson(person.id)} />
-      ))}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.circleScroller}>
+        {people.filter((person) => !person.isUser).map((person) => (
+          <View key={person.id} style={styles.circlePerson}><PersonRow person={person} onPress={() => onSelectPerson(person.id)} /></View>
+        ))}
+      </ScrollView>
     </ScrollView>
   );
 }
 
-function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: Person[]; token: string; userId: string; onRefresh: () => Promise<void>; onSelectFriend: (personId: string) => void }) {
+function Circle({ people, token, userId, onRefresh, onSelectFriend, onNotify }: { people: Person[]; token: string; userId: string; onRefresh: () => Promise<void>; onSelectFriend: (personId: string) => void; onNotify: (message: string) => void }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<User[]>([]);
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [friends, setFriends] = useState<User[]>([]);
   const [message, setMessage] = useState('');
-  const [showMessage, setShowMessage] = useState(false);
+  const [showSentRequests, setShowSentRequests] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<User | null>(null);
   const [busyId, setBusyId] = useState('');
 
   async function loadRequests() {
@@ -593,7 +639,7 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
       const response = await apiRequest<{ users: User[] }>(`/users/search?q=${encodeURIComponent(query.trim())}`, {}, token);
       setResults(response.users);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Search failed');
+      setMessage(GENERIC_ERROR);
     }
   }
 
@@ -605,8 +651,25 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
       setMessage(`Request sent to ${target.name}`);
       setResults((current) => current.filter((user) => user.id !== target.id));
       await loadRequests();
+      onNotify(`Request sent to ${target.name}`);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Request failed');
+      setMessage(GENERIC_ERROR);
+    } finally {
+      setBusyId('');
+    }
+
+  }
+
+  async function removeFriend(friend: User) {
+    setBusyId(friend.id);
+    try {
+      await apiRequest(`/friends/${friend.id}/remove`, { method: 'POST' }, token);
+      setFriends((current) => current.filter((item) => item.id !== friend.id));
+      setRemoveTarget(null);
+      await onRefresh();
+      onNotify(`${friend.name} removed from your circle`);
+    } catch (error) {
+      setMessage(GENERIC_ERROR);
     } finally {
       setBusyId('');
     }
@@ -618,7 +681,7 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
       await apiRequest(`/friend-requests/${request.id}/${decision}`, { method: 'POST' }, token);
       await refreshAll();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Request update failed');
+      setMessage(GENERIC_ERROR);
     } finally {
       setBusyId('');
     }
@@ -628,7 +691,7 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
     let active = true;
     const refresh = () => {
       refreshAll().catch(() => {
-        if (active) setMessage('Unable to load data');
+        if (active) setMessage(GENERIC_ERROR);
       });
     };
     refresh();
@@ -640,7 +703,7 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
   }, []);
 
   const incomingRequests = requests.filter((request) => request.receiverId === userId && request.status === 'pending');
-  const sentRequests = requests.filter((request) => request.senderId === userId);
+  const sentRequests = requests.filter((request) => request.senderId === userId && request.status === 'pending');
   const acceptedFriends = friends;
 
   return (
@@ -651,11 +714,10 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
           <Text style={styles.heading}>Trusted circle</Text>
         </View>
         <View style={styles.circleActions}>
-          <Pressable style={styles.friendStatusButton} onPress={() => setShowMessage(!showMessage)}>
-            <Text style={styles.friendStatusIcon}>♧</Text>
-            {Boolean(message) && <View style={styles.friendStatusBadge} />}
-          </Pressable>
-          <View style={styles.countPill}><Text style={styles.countText}>{acceptedFriends.length} people</Text></View>
+        <Pressable style={styles.friendStatusButton} onPress={() => setShowSentRequests(true)}>
+          <Text style={styles.friendStatusIcon}>♧</Text>
+          {sentRequests.length > 0 && <View style={styles.friendStatusBadge} />}
+        </Pressable>
         </View>
       </View>
 
@@ -668,41 +730,38 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
         </Pressable>
       </View>
 
-      {showMessage && Boolean(message) && <Text style={styles.requestNotice}>{message}</Text>}
+      {Boolean(message) && <Text style={styles.requestNotice}>{message}</Text>}
 
-      {results.map((result) => (
+      {results.map((result) => {
+        const isFriend = acceptedFriends.some((friend) => friend.id === result.id);
+        const hasPendingRequest = requests.some((request) => request.status === 'pending' && (request.senderId === result.id || request.receiverId === result.id));
+        return (
         <View key={result.id} style={styles.person}>
-          <View style={[styles.avatar, { backgroundColor: '#176B87' }]}>
-            <Text style={styles.avatarText}>{result.name.slice(0, 2).toUpperCase()}</Text>
-          </View>
+          {result.avatarId ? <Image source={avatarImages[result.avatarId]} style={styles.avatar} /> : <View style={[styles.avatar, { backgroundColor: '#176B87' }]}><Text style={styles.avatarText}>{result.name.slice(0, 2).toUpperCase()}</Text></View>}
           <View style={styles.personCopy}>
             <Text style={styles.personName}>{result.name}</Text>
             <Text style={styles.personStatus}>@{result.username}</Text>
           </View>
-          <Pressable style={styles.smallButton} onPress={() => sendRequest(result)} disabled={busyId === result.id}>
-            <Text style={styles.smallButtonText}>{busyId === result.id ? '...' : 'Add'}</Text>
+          <Pressable style={[styles.smallButton, isFriend && styles.friendButton]} onPress={() => !isFriend && sendRequest(result)} disabled={isFriend || hasPendingRequest || busyId === result.id}>
+            <Text style={[styles.smallButtonText, isFriend && styles.friendButtonText]}>{isFriend ? 'Friend' : hasPendingRequest ? 'Pending' : busyId === result.id ? '...' : 'Add'}</Text>
           </Pressable>
         </View>
-      ))}
+        );
+      })}
 
       {acceptedFriends.length > 0 && (
         <>
           <Text style={styles.sectionTitle}>Friends</Text>
           {acceptedFriends.map((friend) => (
             <Pressable key={friend.id} style={styles.person} onPress={() => onSelectFriend(friend.id)}>
-              <View style={[styles.avatar, { backgroundColor: '#176B87' }]}>
-                <Text style={styles.avatarText}>{friend.name.slice(0, 2).toUpperCase()}</Text>
-              </View>
+              {friend.avatarId ? <Image source={avatarImages[friend.avatarId]} style={styles.avatar} /> : <View style={[styles.avatar, { backgroundColor: '#176B87' }]}><Text style={styles.avatarText}>{friend.name.slice(0, 2).toUpperCase()}</Text></View>}
               <View style={styles.personCopy}>
                 <Text style={styles.personName}>{friend.name}</Text>
                 <Text style={styles.personStatus}>@{friend.username}</Text>
               </View>
-              <View style={styles.sharingIndicator}>
-                <View style={[styles.sharingDot, { backgroundColor: friend.locationSharingEnabled ? '#4BA67A' : '#CBD4DA' }]} />
-                <Text style={[styles.sharingText, { color: friend.locationSharingEnabled ? '#4BA67A' : '#9BA5B4' }]}>
-                  {friend.locationSharingEnabled ? 'Sharing' : 'Paused'}
-                </Text>
-              </View>
+              <Pressable style={styles.removeButton} onPress={() => setRemoveTarget(friend)}>
+                <Text style={styles.removeButtonText}>Remove</Text>
+              </Pressable>
             </Pressable>
           ))}
         </>
@@ -713,9 +772,7 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
           <Text style={styles.sectionTitle}>Incoming requests</Text>
           {incomingRequests.map((request) => (
             <View key={request.id} style={styles.person}>
-              <View style={[styles.avatar, { backgroundColor: '#C08B45' }]}>
-                <Text style={styles.avatarText}>{request.senderName.slice(0, 2).toUpperCase()}</Text>
-              </View>
+              {request.senderAvatarId ? <Image source={avatarImages[request.senderAvatarId]} style={styles.avatar} /> : <View style={[styles.avatar, { backgroundColor: '#C08B45' }]}><Text style={styles.avatarText}>{request.senderName.slice(0, 2).toUpperCase()}</Text></View>}
               <View style={styles.personCopy}>
                 <Text style={styles.personName}>{request.senderName}</Text>
                 <Text style={styles.personStatus}>@{request.senderUsername} wants to connect</Text>
@@ -733,17 +790,19 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
         </>
       )}
 
-      {sentRequests.length > 0 && (
-        <>
-          <Text style={styles.sectionTitle}>Sent requests</Text>
+      <Modal visible={showSentRequests} transparent animationType="fade" onRequestClose={() => setShowSentRequests(false)}>
+        <View style={styles.modalBackdrop}><View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>Sent requests</Text>
+          {sentRequests.length === 0 && <Text style={styles.modalCopy}>No sent requests.</Text>}
           {sentRequests.map((request) => {
             const otherName = request.senderId === userId ? request.receiverName : request.senderName;
             const otherUsername = request.senderId === userId ? request.receiverUsername : request.senderUsername;
             return (
               <View key={request.id} style={styles.person}>
-                <View style={[styles.avatar, { backgroundColor: '#176B87' }]}>
-                  <Text style={styles.avatarText}>{otherName.slice(0, 2).toUpperCase()}</Text>
-                </View>
+                {(() => {
+                  const avatarId = request.senderId === userId ? request.receiverAvatarId : request.senderAvatarId;
+                  return avatarId ? <Image source={avatarImages[avatarId]} style={styles.avatar} /> : <View style={[styles.avatar, { backgroundColor: '#176B87' }]}><Text style={styles.avatarText}>{otherName.slice(0, 2).toUpperCase()}</Text></View>;
+                })()}
                 <View style={styles.personCopy}>
                   <Text style={styles.personName}>{otherName}</Text>
                   <Text style={styles.personStatus}>@{otherUsername}</Text>
@@ -754,15 +813,28 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend }: { people: 
               </View>
             );
           })}
-        </>
-      )}
+          <Pressable style={styles.secondaryButton} onPress={() => setShowSentRequests(false)}><Text style={styles.secondaryButtonText}>Close</Text></Pressable>
+        </View></View>
+      </Modal>
+      <Modal visible={Boolean(removeTarget)} transparent animationType="fade" onRequestClose={() => setRemoveTarget(null)}>
+        <View style={styles.modalBackdrop}><View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>Remove friend?</Text>
+          <Text style={styles.modalCopy}>Remove {removeTarget?.name || 'this friend'} from your trusted circle?</Text>
+          <View style={styles.modalActions}>
+            <Pressable style={styles.declineButton} onPress={() => setRemoveTarget(null)}><Text style={styles.declineText}>Cancel</Text></Pressable>
+            <Pressable style={styles.smallButton} onPress={() => removeTarget && removeFriend(removeTarget)} disabled={busyId === removeTarget?.id}><Text style={styles.smallButtonText}>Remove</Text></Pressable>
+          </View>
+        </View></View>
+      </Modal>
 
     </ScrollView>
   );
 }
 
-function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSignOut }: { user: User | null; token: string; sharing: boolean; onToggleSharing: (value: boolean) => void; onUserUpdated: (user: User) => void; onSignOut: () => void }) {
-  const initials = user?.name ? user.name.split(' ').map((p) => p[0]).join('').slice(0, 2).toUpperCase() : 'AM';
+function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSignOut, onNotify }: { user: User | null; token: string; sharing: boolean; onToggleSharing: (value: boolean) => void; onUserUpdated: (user: User) => void; onSignOut: () => void; onNotify: (message: string) => void }) {
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileTab, setProfileTab] = useState<'details' | 'password'>('details');
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
   const [username, setUsername] = useState(user?.username || '');
   const [name, setName] = useState(user?.name || '');
   const [email, setEmail] = useState(user?.email || '');
@@ -791,9 +863,10 @@ function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSign
         body: JSON.stringify({ username, name, email, avatarId }),
       }, token);
       onUserUpdated({ ...response.user, locationSharingEnabled: user?.locationSharingEnabled });
-      setMessage('Profile updated.');
+      onNotify('Profile updated.');
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to update profile');
+      setError(GENERIC_ERROR);
+      onNotify(GENERIC_ERROR);
     } finally {
       setBusy(false);
     }
@@ -811,34 +884,70 @@ function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSign
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
-      setMessage('Password changed.');
+      onNotify('Password changed.');
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to change password');
+      setError(GENERIC_ERROR);
+      onNotify(GENERIC_ERROR);
     } finally {
       setBusy(false);
     }
   }
 
+  if (!profileOpen) {
+    return (
+      <ScrollView contentContainerStyle={styles.scroll}>
+        <Text style={styles.eyebrow}>ACCOUNT</Text>
+        <Text style={styles.heading}>Settings</Text>
+        <Pressable style={styles.profile} onPress={() => setProfileOpen(true)}>
+          <Image source={avatarImages[user?.avatarId || 'avatar_01']} style={styles.profileAvatar} />
+          <View style={styles.shareCopy}>
+            <Text style={styles.profileName}>{user?.name || 'User'}</Text>
+            <Text style={styles.profileEmail}>@{user?.username || ''}</Text>
+            <Text style={styles.profileEmail}>{user?.email || ''}</Text>
+          </View>
+          <Text style={styles.arrow}>›</Text>
+        </Pressable>
+        <Text style={styles.settingsLabel}>PRIVACY</Text>
+        <View style={styles.settingRow}>
+          <View style={styles.shareCopy}>
+            <Text style={styles.cardTitle}>Location sharing</Text>
+            <Text style={styles.cardSub}>{sharing ? 'Available to your circle' : 'Private for everyone'}</Text>
+          </View>
+          <Switch value={sharing} onValueChange={onToggleSharing} trackColor={{ false: '#D3D8DC', true: '#A9D8C1' }} thumbColor={sharing ? '#2D8B61' : '#fff'} />
+        </View>
+        <Text style={styles.settingsLabel}>SUPPORT</Text>
+        <View style={styles.privacyBlock}>
+          <Text style={styles.cardTitle}>Privacy and safety</Text>
+          <Text style={styles.cardSub}>Only accepted friends can see your shared location. You can pause sharing at any time.</Text>
+        </View>
+        <Pressable style={styles.signOutButton} onPress={() => setConfirmSignOut(true)}>
+          <Text style={styles.signOutText}>Sign out</Text>
+        </Pressable>
+        <Modal visible={confirmSignOut} transparent animationType="fade" onRequestClose={() => setConfirmSignOut(false)}>
+          <View style={styles.modalBackdrop}><View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Sign out?</Text>
+            <Text style={styles.modalCopy}>You will need to sign in again to see your circle.</Text>
+            <View style={styles.modalActions}>
+              <Pressable style={styles.declineButton} onPress={() => setConfirmSignOut(false)}><Text style={styles.declineText}>Cancel</Text></Pressable>
+              <Pressable style={styles.smallButton} onPress={() => { setConfirmSignOut(false); onSignOut(); }}><Text style={styles.smallButtonText}>Sign out</Text></Pressable>
+            </View>
+          </View></View>
+        </Modal>
+      </ScrollView>
+    );
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
+      <Pressable style={styles.backButton} onPress={() => setProfileOpen(false)}>
+        <Text style={styles.backButtonText}>‹ Settings</Text>
+      </Pressable>
       <Text style={styles.eyebrow}>ACCOUNT</Text>
-      <Text style={styles.heading}>Settings</Text>
-      <View style={styles.profile}>
+      <Text style={styles.heading}>Your profile</Text>
+      <View style={styles.profileEditorAvatar}>
         <Image source={avatarImages[avatarId]} style={styles.profileAvatar} />
-        <View style={styles.shareCopy}>
-          <Text style={styles.profileName}>{user?.name || 'User'}</Text>
-          <Text style={styles.profileEmail}>@{user?.username || ''}</Text>
-        </View>
-        <Text style={styles.profileEmail}>{user?.email || ''}</Text>
       </View>
-      <Text style={styles.settingsLabel}>PROFILE</Text>
-      <Text style={styles.label}>USERNAME</Text>
-      <TextInput style={styles.input} value={username} onChangeText={setUsername} autoCapitalize="none" />
-      <Text style={styles.label}>NAME</Text>
-      <TextInput style={styles.input} value={name} onChangeText={setName} />
-      <Text style={styles.label}>EMAIL</Text>
-      <TextInput style={styles.input} value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
-      <Text style={styles.label}>PROFILE AVATAR</Text>
+      <Text style={styles.fieldHint}>Choose a profile icon</Text>
       <View style={styles.avatarGrid}>
         {avatarIds.map((id) => (
           <Pressable key={id} style={[styles.avatarChoice, avatarId === id && styles.avatarChoiceSelected]} onPress={() => setAvatarId(id)}>
@@ -846,38 +955,54 @@ function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSign
           </Pressable>
         ))}
       </View>
-      <Pressable style={styles.primary} onPress={saveProfile} disabled={busy}>
-        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Save profile</Text>}
-      </Pressable>
-      <Text style={styles.settingsLabel}>PASSWORD</Text>
-      <Text style={styles.label}>CURRENT PASSWORD</Text>
-      <TextInput style={styles.input} value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry />
-      <Text style={styles.label}>NEW PASSWORD</Text>
-      <TextInput style={styles.input} value={newPassword} onChangeText={setNewPassword} secureTextEntry />
-      <Text style={styles.label}>CONFIRM NEW PASSWORD</Text>
-      <TextInput style={styles.input} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />
-      <Pressable style={styles.secondaryButton} onPress={changePassword} disabled={busy}>
-        <Text style={styles.secondaryButtonText}>Change password</Text>
-      </Pressable>
+      <View style={styles.profileTabs}>
+        <Pressable style={[styles.profileTab, profileTab === 'details' && styles.profileTabActive]} onPress={() => setProfileTab('details')}><Text style={[styles.profileTabText, profileTab === 'details' && styles.profileTabTextActive]}>Profile details</Text></Pressable>
+        <Pressable style={[styles.profileTab, profileTab === 'password' && styles.profileTabActive]} onPress={() => setProfileTab('password')}><Text style={[styles.profileTabText, profileTab === 'password' && styles.profileTabTextActive]}>Change password</Text></Pressable>
+      </View>
+      {profileTab === 'details' ? <>
+        <Text style={styles.settingsLabel}>PROFILE DETAILS</Text>
+        <EditableProfileField label="Username" value={username} onChangeText={setUsername} />
+        <EditableProfileField label="Name" value={name} onChangeText={setName} />
+        <EditableProfileField label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" />
+        <Pressable style={styles.primary} onPress={saveProfile} disabled={busy}>
+          {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Save profile</Text>}
+        </Pressable>
+      </> : <>
+        <Text style={styles.settingsLabel}>CHANGE PASSWORD</Text>
+        <PasswordField label="Current password" value={currentPassword} onChangeText={setCurrentPassword} />
+        <PasswordField label="New password" value={newPassword} onChangeText={setNewPassword} />
+        <PasswordField label="Confirm new password" value={confirmPassword} onChangeText={setConfirmPassword} />
+        <Pressable style={styles.secondaryButton} onPress={changePassword} disabled={busy}>
+          {busy ? <ActivityIndicator color="#0B6EF3" /> : <Text style={styles.secondaryButtonText}>Change password</Text>}
+        </Pressable>
+      </>}
       {Boolean(message) && <Text style={styles.notice}>{message}</Text>}
       {Boolean(error) && <Text style={styles.error}>{error}</Text>}
-      <Text style={styles.settingsLabel}>PRIVACY</Text>
-      <View style={styles.settingRow}>
-        <View style={styles.shareCopy}>
-          <Text style={styles.cardTitle}>Location sharing</Text>
-          <Text style={styles.cardSub}>{sharing ? 'Available to your circle' : 'Paused for everyone'}</Text>
-        </View>
-        <Switch value={sharing} onValueChange={onToggleSharing} trackColor={{ false: '#D3D8DC', true: '#A9D8C1' }} thumbColor={sharing ? '#2D8B61' : '#fff'} />
-      </View>
-      <Text style={styles.settingsLabel}>SUPPORT</Text>
-      <View style={styles.privacyBlock}>
-        <Text style={styles.cardTitle}>Privacy and safety</Text>
-        <Text style={styles.cardSub}>Only accepted friends can see your shared location. You can pause sharing at any time, and location updates are sent only while sharing is enabled.</Text>
-      </View>
-      <Pressable style={styles.signOutButton} onPress={onSignOut}>
-        <Text style={styles.signOutText}>Sign out</Text>
-      </Pressable>
     </ScrollView>
+  );
+}
+
+function EditableProfileField({ label, value, onChangeText, secureTextEntry = false, keyboardType = 'default' }: { label: string; value: string; onChangeText: (value: string) => void; secureTextEntry?: boolean; keyboardType?: 'default' | 'email-address' }) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <View style={styles.profileField}>
+      <View style={styles.profileFieldHeader}>
+        <Text style={styles.profileFieldLabel}>{label}</Text>
+        <Pressable onPress={() => setEditing(!editing)}>
+          <Text style={styles.editButton}>{editing ? 'Done' : 'Edit'}</Text>
+        </Pressable>
+      </View>
+      {editing ? <TextInput style={styles.input} value={value} onChangeText={onChangeText} secureTextEntry={secureTextEntry} keyboardType={keyboardType} autoCapitalize="none" autoFocus /> : <Text style={styles.profileFieldValue}>{secureTextEntry && value ? '••••••••' : value || 'Not set'}</Text>}
+    </View>
+  );
+}
+
+function PasswordField({ label, value, onChangeText }: { label: string; value: string; onChangeText: (value: string) => void }) {
+  return (
+    <View style={styles.profileField}>
+      <Text style={styles.profileFieldLabel}>{label}</Text>
+      <TextInput style={styles.input} value={value} onChangeText={onChangeText} secureTextEntry autoCapitalize="none" />
+    </View>
   );
 }
 
@@ -887,10 +1012,10 @@ function PersonRow({ person, detailed = false, onPress }: { person: Person; deta
       {person.avatarId ? <Image source={avatarImages[person.avatarId]} style={styles.avatar} /> : <View style={[styles.avatar, { backgroundColor: person.color }]}><Text style={styles.avatarText}>{person.initials}</Text></View>}
       <View style={styles.personCopy}>
         <Text style={styles.personName}>{person.name}</Text>
-        <Text style={styles.personStatus}>{detailed ? `${person.place}  ·  ${person.updated}` : person.updated}</Text>
+        <Text style={styles.personStatus}>{detailed ? `${person.place}  ·  ${person.locationSharingEnabled ? 'Live' : person.updated}` : person.locationSharingEnabled ? 'Live' : person.updated}</Text>
       </View>
       <View style={styles.personOnline}>
-        <View style={styles.onlineDot} />
+        <View style={[styles.onlineDot, !person.locationSharingEnabled && styles.offlineDot]} />
       </View>
     </Pressable>
   );
@@ -945,7 +1070,7 @@ const styles = StyleSheet.create({
   heading: { color: '#10224E', fontSize: 24, lineHeight: 30, fontWeight: '800', marginTop: 6, flexShrink: 1 },
   notification: { width: 40, height: 40, borderRadius: 14, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', marginLeft: 12 },
   bell: { color: '#0B6EF3', fontSize: 25, transform: [{ rotate: '-30deg' }] },
-  mapCard: { height: 365, borderRadius: 22, overflow: 'hidden', position: 'relative', backgroundColor: '#DCE7E8' },
+  mapCard: { height: 430, borderRadius: 22, overflow: 'hidden', position: 'relative', backgroundColor: '#DCE7E8' },
   map: { flex: 1 },
   mapLabel: { position: 'absolute', left: 14, top: 14, backgroundColor: 'rgba(255,255,255,0.94)', borderRadius: 18, paddingVertical: 9, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 7 },
   dot: { width: 8, height: 8, borderRadius: 4 },
@@ -961,7 +1086,8 @@ const styles = StyleSheet.create({
   cardSub: { color: '#7A8494', fontSize: 12, marginTop: 4 },
   sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 25, marginBottom: 9 },
   sectionTitle: { color: '#1D2A35', fontSize: 16, fontWeight: '800', marginTop: 22, marginBottom: 10 },
-  seeAll: { color: '#0B6EF3', fontSize: 12, fontWeight: '700' },
+  circleScroller: { paddingVertical: 2 },
+  circlePerson: { width: 250, marginRight: 10 },
   person: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
   avatar: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginRight: 11 },
   avatarText: { color: '#fff', fontSize: 12, fontWeight: '800' },
@@ -974,6 +1100,7 @@ const styles = StyleSheet.create({
   personStatus: { color: '#7A8494', fontSize: 12, marginTop: 4 },
   personOnline: { width: 22, alignItems: 'center' },
   onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#4BA67A' },
+  offlineDot: { backgroundColor: '#A0A8AF' },
   nav: { height: 76, borderTopWidth: 1, borderTopColor: '#E2E5E1', backgroundColor: '#fff', flexDirection: 'row', justifyContent: 'space-around', paddingTop: 10 },
   navItem: { alignItems: 'center', width: 90 },
   navIcon: { color: '#A0A8AF', fontSize: 22, height: 27 },
@@ -994,6 +1121,15 @@ const styles = StyleSheet.create({
   arrow: { color: '#7A8494', fontSize: 26, marginLeft: 10 },
   profile: { backgroundColor: '#fff', borderRadius: 18, padding: 16, marginTop: 22, flexDirection: 'row', alignItems: 'center' },
   profileAvatar: { width: 48, height: 48, borderRadius: 16, marginRight: 12 },
+  profileEditorAvatar: { alignItems: 'center', marginTop: 22 },
+  backButton: { marginBottom: 22 },
+  backButtonText: { color: '#0B6EF3', fontSize: 14, fontWeight: '700' },
+  fieldHint: { color: '#7A8494', fontSize: 12, textAlign: 'center', marginTop: 8, marginBottom: 12 },
+  profileField: { backgroundColor: '#fff', borderRadius: 14, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: '#E4ECF7' },
+  profileFieldHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  profileFieldLabel: { color: '#78818D', fontSize: 11, fontWeight: '700' },
+  editButton: { color: '#0B6EF3', fontSize: 12, fontWeight: '800' },
+  profileFieldValue: { color: '#1D2A35', fontSize: 15, marginTop: 8 },
   profileInitials: { color: '#fff', fontWeight: '800' },
   profileName: { color: '#1D2A35', fontSize: 15, fontWeight: '800' },
   profileEmail: { color: '#7A8494', fontSize: 12, marginTop: 4 },
@@ -1010,12 +1146,28 @@ const styles = StyleSheet.create({
   searchButtonText: { color: '#fff', fontSize: 12, fontWeight: '800' },
   smallButton: { backgroundColor: '#176B87', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   smallButtonText: { color: '#fff', fontSize: 11, fontWeight: '800' },
+  friendButton: { backgroundColor: '#E8F2EF' },
+  friendButtonText: { color: '#2D8B61' },
   requestActions: { alignItems: 'flex-end', gap: 5 },
   declineButton: { paddingHorizontal: 8, paddingVertical: 3 },
   declineText: { color: '#D0533A', fontSize: 10, fontWeight: '800' },
   sharingIndicator: { alignItems: 'center' },
   sharingDot: { width: 8, height: 8, borderRadius: 4, marginBottom: 2 },
   sharingText: { fontSize: 10, fontWeight: '600' },
+  removeButton: { borderWidth: 1, borderColor: '#E5684A', borderRadius: 9, paddingHorizontal: 8, paddingVertical: 6 },
+  removeButtonText: { color: '#D0533A', fontSize: 10, fontWeight: '800' },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   statusBadgeText: { color: '#fff', fontSize: 10, fontWeight: '700', textTransform: 'capitalize' },
+  profileTabs: { flexDirection: 'row', backgroundColor: '#E8F4FF', borderRadius: 14, padding: 4, marginTop: 24 },
+  profileTab: { flex: 1, alignItems: 'center', paddingVertical: 11, borderRadius: 10 },
+  profileTabActive: { backgroundColor: '#fff' },
+  profileTabText: { color: '#6E7D91', fontSize: 12, fontWeight: '700' },
+  profileTabTextActive: { color: '#0B6EF3' },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(16,34,78,0.42)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  modalCard: { width: '100%', maxWidth: 380, backgroundColor: '#fff', borderRadius: 22, padding: 22 },
+  modalTitle: { color: '#10224E', fontSize: 19, fontWeight: '800' },
+  modalCopy: { color: '#66727F', fontSize: 14, lineHeight: 20, marginTop: 8 },
+  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 12, marginTop: 20 },
+  noticeToast: { position: 'absolute', top: 12, left: 18, right: 18, zIndex: 10, backgroundColor: '#10224E', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 13, shadowColor: '#10224E', shadowOpacity: 0.18, shadowRadius: 10, elevation: 5 },
+  noticeToastText: { color: '#fff', fontSize: 13, fontWeight: '700', textAlign: 'center' },
 });
