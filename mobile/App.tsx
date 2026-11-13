@@ -3,7 +3,7 @@ import * as Location from 'expo-location';
 import { StatusBar } from 'expo-status-bar';
 import * as TaskManager from 'expo-task-manager';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, AppState, BackHandler, Easing, Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Animated, AppState, BackHandler, Easing, Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { avatarData } from './avatarData';
@@ -33,6 +33,16 @@ const avatarImages: Record<AvatarId, number> = {
 };
 const avatarIds = Object.keys(avatarImages) as AvatarId[];
 let cachedApiUrl: string | null = null;
+
+function requestErrorMessage(path: string, status: number, body: { message?: string }) {
+  if ((path === '/auth/login' || path === '/auth/register') && status === 401) return 'Username or password is incorrect.';
+  if (path === '/auth/register' && status === 409) return 'Email or username already exists.';
+  if (path === '/me/profile' && status === 409) return 'Email or username already exists.';
+  if (path === '/me/profile' && status === 400) return body.message || 'Please check your profile details.';
+  if (path === '/me/password' && status === 401) return 'Current password is invalid.';
+  if (path === '/me/password' && status === 400 && body.message?.includes('confirmation')) return 'New password must match the confirmation password.';
+  return GENERIC_ERROR;
+}
 
 function avatarUri(avatarId?: AvatarId) {
   return avatarId ? avatarData[avatarId] : '';
@@ -70,7 +80,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, token?: st
   } catch {
     throw new Error(GENERIC_ERROR);
   }
-  if (!response.ok) throw new Error(GENERIC_ERROR);
+  if (!response.ok) throw new Error(requestErrorMessage(path, response.status, body));
   return body as T;
 }
 
@@ -149,7 +159,7 @@ function mapPeople(locations: ApiLocation[] = [], userId: string): Person[] {
     if (!location.userId || !Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return [];
     const isUser = location.userId === userId;
     const isSharing = location.locationSharingEnabled !== false && location.locationSharingEnabled !== 0 && location.locationSharingEnabled !== '0';
-    return [{ id: location.userId, name: isUser ? 'You' : name, initials: name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(), color: colors[index % colors.length], avatarId: location.avatarId, latitude, longitude, place: 'Shared location', updated: isUser || isSharing || Number.isNaN(updatedAt.getTime()) ? 'Live now' : updatedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), locationSharingEnabled: isSharing, isUser }];
+    return [{ id: location.userId, name: isUser ? 'You' : name, initials: name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(), color: colors[index % colors.length], avatarId: location.avatarId, latitude, longitude, place: 'Shared location', updated: isUser || isSharing || Number.isNaN(updatedAt.getTime()) ? 'Live now' : updatedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }), locationSharingEnabled: isSharing, isUser }];
   });
 }
 
@@ -185,13 +195,14 @@ function greetingLabel() {
   return 'Good evening';
 }
 
-function mapHtml(people: Person[], center: Coordinates) {
-  const points = JSON.stringify(people.map((person) => ({
+function mapHtml(people: Person[], center: Coordinates, selectedPersonId: string | null) {
+  const points = JSON.stringify([...people].sort((a, b) => Number(b.id === selectedPersonId) - Number(a.id === selectedPersonId)).map((person) => ({
     latitude: person.latitude,
     longitude: person.longitude,
     title: person.isUser ? 'You' : person.name,
     color: person.color,
     avatarUrl: avatarUri(person.avatarId),
+    selected: person.id === selectedPersonId,
   }))).replace(/</g, '\\u003c');
   const centerJson = JSON.stringify(center);
 
@@ -224,7 +235,7 @@ function mapHtml(people: Person[], center: Coordinates) {
         ? '<img src="' + point.avatarUrl + '" alt="" />'
         : '<div style="width:100%;height:100%;background:' + point.color + '"></div>';
       const icon = L.divIcon({ className: '', html: '<div class="marker">' + markerContent + '</div>', iconSize: [44, 44], iconAnchor: [22, 22] });
-      L.marker([point.latitude, point.longitude], { icon }).addTo(map).bindPopup(point.title);
+      L.marker([point.latitude, point.longitude], { icon, zIndexOffset: point.selected ? 1000 : 0 }).addTo(map).bindPopup(point.title);
     });
   </script>
 </body>
@@ -336,6 +347,10 @@ function AppContent() {
     setToken(response.token);
     setUser(response.user);
     setSharing(Boolean(response.user.locationSharingEnabled ?? true));
+    setPeople([]);
+    setCurrentCoordinates(null);
+    setSelectedMapPersonId(null);
+    setToast('');
     await AsyncStorage.setItem('pingme-location-sharing', String(Boolean(response.user.locationSharingEnabled ?? true)));
     setSignedIn(true);
     try {
@@ -420,6 +435,8 @@ function AppContent() {
     setUser(null);
     setPeople([]);
     setCurrentCoordinates(null);
+    setSelectedMapPersonId(null);
+    setToast('');
     setSignedIn(false);
     setTab('home');
   }
@@ -507,7 +524,7 @@ function Login({ onAuthenticated }: { onAuthenticated: (response: { token: strin
       const response = await apiRequest<{ token: string; user: User }>('/auth/login', { method: 'POST', body: JSON.stringify({ identifier, password }) });
       await onAuthenticated(response);
     } catch (requestError) {
-      setError(GENERIC_ERROR);
+      setError(requestError instanceof Error ? requestError.message : GENERIC_ERROR);
     } finally {
       setBusy(false);
     }
@@ -562,6 +579,9 @@ function Login({ onAuthenticated }: { onAuthenticated: (response: { token: strin
 }
 
 function Home({ people, currentCoordinates, selectedPersonId, onSelectPerson, sharing, onToggleSharing, userName }: { people: Person[]; currentCoordinates: Coordinates | null; selectedPersonId: string | null; onSelectPerson: (personId: string) => void; sharing: boolean; onToggleSharing: (value: boolean) => void; userName: string }) {
+  const { height: screenHeight } = useWindowDimensions();
+  const circleScrollRef = useRef<ScrollView>(null);
+  const [circleHasMore, setCircleHasMore] = useState(false);
   const me = people.find((person) => person.isUser);
   const selectedPerson = people.find((person) => person.id === selectedPersonId);
   const mapCenter = selectedPerson || (currentCoordinates ? { ...currentCoordinates } : me) || people[0];
@@ -574,15 +594,12 @@ function Home({ people, currentCoordinates, selectedPersonId, onSelectPerson, sh
           <Text style={styles.eyebrow}>{todayLabel()}</Text>
           <Text style={styles.heading}>{greetingLabel()}, {userName}.</Text>
         </View>
-        <View style={styles.notification}>
-          <Text style={styles.bell}>⌁</Text>
-        </View>
       </View>
-      <View style={styles.mapCard}>
+      <View style={[styles.mapCard, { height: Math.min(390, Math.max(300, screenHeight * 0.42)) }]}>
         <WebView
           style={styles.map}
           originWhitelist={['*']}
-          source={{ html: mapHtml(people, mapCenter) }}
+          source={{ html: mapHtml(people, mapCenter, selectedPersonId) }}
           javaScriptEnabled
           domStorageEnabled
           allowFileAccess
@@ -599,11 +616,22 @@ function Home({ people, currentCoordinates, selectedPersonId, onSelectPerson, sh
       <View style={styles.sectionRow}>
         <Text style={styles.sectionTitle}>Your circle</Text>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.circleScroller}>
+      <View style={styles.circleScrollerWrap}>
+        <ScrollView
+          ref={circleScrollRef}
+          style={styles.circleScroller}
+          showsVerticalScrollIndicator={false}
+          nestedScrollEnabled
+          onContentSizeChange={(_, contentHeight) => setCircleHasMore(contentHeight > 190)}
+          onScroll={(event) => setCircleHasMore(event.nativeEvent.contentOffset.y + 190 < event.nativeEvent.contentSize.height - 4)}
+          scrollEventThrottle={100}
+        >
         {people.filter((person) => !person.isUser).map((person) => (
           <View key={person.id} style={styles.circlePerson}><PersonRow person={person} onPress={() => onSelectPerson(person.id)} /></View>
         ))}
-      </ScrollView>
+        </ScrollView>
+        {circleHasMore && <Pressable style={styles.circleDownButton} onPress={() => circleScrollRef.current?.scrollToEnd({ animated: true })}><Text style={styles.circleDownButtonText}>⌄</Text></Pressable>}
+      </View>
     </ScrollView>
   );
 }
@@ -616,6 +644,7 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend, onNotify }: 
   const [message, setMessage] = useState('');
   const [showSentRequests, setShowSentRequests] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<User | null>(null);
+  const [menuTarget, setMenuTarget] = useState<string | null>(null);
   const [busyId, setBusyId] = useState('');
 
   async function loadRequests() {
@@ -715,7 +744,8 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend, onNotify }: 
         </View>
         <View style={styles.circleActions}>
         <Pressable style={styles.friendStatusButton} onPress={() => setShowSentRequests(true)}>
-          <Text style={styles.friendStatusIcon}>♧</Text>
+          <Text style={styles.friendStatusIcon}>☷</Text>
+          <Text style={styles.friendStatusLabel}>Requests</Text>
           {sentRequests.length > 0 && <View style={styles.friendStatusBadge} />}
         </Pressable>
         </View>
@@ -753,16 +783,25 @@ function Circle({ people, token, userId, onRefresh, onSelectFriend, onNotify }: 
         <>
           <Text style={styles.sectionTitle}>Friends</Text>
           {acceptedFriends.map((friend) => (
-            <Pressable key={friend.id} style={styles.person} onPress={() => onSelectFriend(friend.id)}>
+            <View key={friend.id} style={styles.friendRow}>
+              <Pressable style={styles.friendMain} onPress={() => onSelectFriend(friend.id)}>
               {friend.avatarId ? <Image source={avatarImages[friend.avatarId]} style={styles.avatar} /> : <View style={[styles.avatar, { backgroundColor: '#176B87' }]}><Text style={styles.avatarText}>{friend.name.slice(0, 2).toUpperCase()}</Text></View>}
               <View style={styles.personCopy}>
                 <Text style={styles.personName}>{friend.name}</Text>
                 <Text style={styles.personStatus}>@{friend.username}</Text>
               </View>
-              <Pressable style={styles.removeButton} onPress={() => setRemoveTarget(friend)}>
-                <Text style={styles.removeButtonText}>Remove</Text>
               </Pressable>
-            </Pressable>
+              <Pressable style={styles.moreButton} onPress={() => setMenuTarget(menuTarget === friend.id ? null : friend.id)} hitSlop={8}>
+                <Text style={styles.moreButtonText}>•••</Text>
+              </Pressable>
+              {menuTarget === friend.id && (
+                <View style={styles.friendMenu}>
+                  <Pressable onPress={() => { setMenuTarget(null); setRemoveTarget(friend); }}>
+                    <Text style={styles.friendMenuText}>Remove friend</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
           ))}
         </>
       )}
@@ -842,6 +881,7 @@ function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSign
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [editingField, setEditingField] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -863,16 +903,25 @@ function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSign
         body: JSON.stringify({ username, name, email, avatarId }),
       }, token);
       onUserUpdated({ ...response.user, locationSharingEnabled: user?.locationSharingEnabled });
+      setEditingField(null);
       onNotify('Profile updated.');
     } catch (requestError) {
-      setError(GENERIC_ERROR);
-      onNotify(GENERIC_ERROR);
+      const message = requestError instanceof Error ? requestError.message : GENERIC_ERROR;
+      setError(message);
+      onNotify(message);
     } finally {
       setBusy(false);
     }
   }
 
   async function changePassword() {
+    if (!currentPassword || !newPassword || !confirmPassword) return;
+    if (newPassword !== confirmPassword) {
+      const message = 'New password must match the confirmation password.';
+      setError(message);
+      onNotify(message);
+      return;
+    }
     setBusy(true);
     setMessage('');
     setError('');
@@ -886,8 +935,9 @@ function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSign
       setConfirmPassword('');
       onNotify('Password changed.');
     } catch (requestError) {
-      setError(GENERIC_ERROR);
-      onNotify(GENERIC_ERROR);
+      const message = requestError instanceof Error ? requestError.message : GENERIC_ERROR;
+      setError(message);
+      onNotify(message);
     } finally {
       setBusy(false);
     }
@@ -950,7 +1000,7 @@ function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSign
       <Text style={styles.fieldHint}>Choose a profile icon</Text>
       <View style={styles.avatarGrid}>
         {avatarIds.map((id) => (
-          <Pressable key={id} style={[styles.avatarChoice, avatarId === id && styles.avatarChoiceSelected]} onPress={() => setAvatarId(id)}>
+          <Pressable key={id} style={[styles.avatarChoice, avatarId === id && styles.avatarChoiceSelected]} onPress={() => { setAvatarId(id); setEditingField('avatar'); }}>
             <Image source={avatarImages[id]} style={styles.avatarChoiceImage} />
           </Pressable>
         ))}
@@ -961,18 +1011,19 @@ function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSign
       </View>
       {profileTab === 'details' ? <>
         <Text style={styles.settingsLabel}>PROFILE DETAILS</Text>
-        <EditableProfileField label="Username" value={username} onChangeText={setUsername} />
-        <EditableProfileField label="Name" value={name} onChangeText={setName} />
-        <EditableProfileField label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" />
-        <Pressable style={styles.primary} onPress={saveProfile} disabled={busy}>
+        <EditableProfileField label="Username" value={username} onChangeText={setUsername} editing={editingField === 'Username'} onEdit={() => setEditingField('Username')} />
+        <EditableProfileField label="Name" value={name} onChangeText={setName} editing={editingField === 'Name'} onEdit={() => setEditingField('Name')} />
+        <EditableProfileField label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" editing={editingField === 'Email'} onEdit={() => setEditingField('Email')} />
+        {editingField && <Pressable style={styles.primary} onPress={saveProfile} disabled={busy}>
           {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Save profile</Text>}
-        </Pressable>
+        </Pressable>}
       </> : <>
         <Text style={styles.settingsLabel}>CHANGE PASSWORD</Text>
         <PasswordField label="Current password" value={currentPassword} onChangeText={setCurrentPassword} />
         <PasswordField label="New password" value={newPassword} onChangeText={setNewPassword} />
         <PasswordField label="Confirm new password" value={confirmPassword} onChangeText={setConfirmPassword} />
-        <Pressable style={styles.secondaryButton} onPress={changePassword} disabled={busy}>
+        {Boolean(confirmPassword && newPassword !== confirmPassword) && <Text style={styles.error}>New password must match the confirmation password.</Text>}
+        <Pressable style={[styles.secondaryButton, (!currentPassword || !newPassword || !confirmPassword) && styles.disabledButton]} onPress={changePassword} disabled={busy || !currentPassword || !newPassword || !confirmPassword}>
           {busy ? <ActivityIndicator color="#0B6EF3" /> : <Text style={styles.secondaryButtonText}>Change password</Text>}
         </Pressable>
       </>}
@@ -982,26 +1033,31 @@ function Settings({ user, token, sharing, onToggleSharing, onUserUpdated, onSign
   );
 }
 
-function EditableProfileField({ label, value, onChangeText, secureTextEntry = false, keyboardType = 'default' }: { label: string; value: string; onChangeText: (value: string) => void; secureTextEntry?: boolean; keyboardType?: 'default' | 'email-address' }) {
-  const [editing, setEditing] = useState(false);
+function EditableProfileField({ label, value, onChangeText, editing, onEdit, keyboardType = 'default' }: { label: string; value: string; onChangeText: (value: string) => void; editing: boolean; onEdit: () => void; keyboardType?: 'default' | 'email-address' }) {
   return (
     <View style={styles.profileField}>
       <View style={styles.profileFieldHeader}>
         <Text style={styles.profileFieldLabel}>{label}</Text>
-        <Pressable onPress={() => setEditing(!editing)}>
-          <Text style={styles.editButton}>{editing ? 'Done' : 'Edit'}</Text>
+        <Pressable onPress={onEdit} hitSlop={8}>
+          <Text style={styles.editButton}>✎</Text>
         </Pressable>
       </View>
-      {editing ? <TextInput style={styles.input} value={value} onChangeText={onChangeText} secureTextEntry={secureTextEntry} keyboardType={keyboardType} autoCapitalize="none" autoFocus /> : <Text style={styles.profileFieldValue}>{secureTextEntry && value ? '••••••••' : value || 'Not set'}</Text>}
+      {editing ? <TextInput style={styles.input} value={value} onChangeText={onChangeText} keyboardType={keyboardType} autoCapitalize="none" autoFocus /> : <Text style={styles.profileFieldValue}>{value || 'Not set'}</Text>}
     </View>
   );
 }
 
 function PasswordField({ label, value, onChangeText }: { label: string; value: string; onChangeText: (value: string) => void }) {
+  const [visible, setVisible] = useState(false);
   return (
     <View style={styles.profileField}>
       <Text style={styles.profileFieldLabel}>{label}</Text>
-      <TextInput style={styles.input} value={value} onChangeText={onChangeText} secureTextEntry autoCapitalize="none" />
+      <View style={styles.passwordRow}>
+        <TextInput style={styles.passwordInput} value={value} onChangeText={onChangeText} secureTextEntry={!visible} autoCapitalize="none" />
+        <Pressable style={styles.passwordToggle} onPress={() => setVisible(!visible)}>
+          <Text style={styles.passwordToggleText}>{visible ? 'Hide' : 'Show'}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -1060,6 +1116,7 @@ const styles = StyleSheet.create({
   primary: { height: 54, borderRadius: 14, backgroundColor: '#0B6EF3', alignItems: 'center', justifyContent: 'center', marginTop: 24 },
   primaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   secondaryButton: { height: 50, borderRadius: 14, borderWidth: 1, borderColor: '#0B6EF3', alignItems: 'center', justifyContent: 'center', marginTop: 16 },
+  disabledButton: { opacity: 0.45 },
   secondaryButtonText: { color: '#0B6EF3', fontSize: 14, fontWeight: '700' },
   error: { color: '#B34D3B', textAlign: 'center', marginTop: 12, fontSize: 12 },
   notice: { color: '#129B83', textAlign: 'center', marginTop: 12, fontSize: 12, fontWeight: '700' },
@@ -1086,8 +1143,11 @@ const styles = StyleSheet.create({
   cardSub: { color: '#7A8494', fontSize: 12, marginTop: 4 },
   sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 25, marginBottom: 9 },
   sectionTitle: { color: '#1D2A35', fontSize: 16, fontWeight: '800', marginTop: 22, marginBottom: 10 },
-  circleScroller: { paddingVertical: 2 },
-  circlePerson: { width: 250, marginRight: 10 },
+  circleScroller: { maxHeight: 190, backgroundColor: '#fff', borderRadius: 16, paddingHorizontal: 10, paddingVertical: 2 },
+  circleScrollerWrap: { position: 'relative' },
+  circleDownButton: { position: 'absolute', right: 16, bottom: 8, width: 30, height: 30, borderRadius: 15, backgroundColor: '#0B6EF3', alignItems: 'center', justifyContent: 'center', elevation: 4, shadowColor: '#10224E', shadowOpacity: 0.2, shadowRadius: 5 },
+  circleDownButtonText: { color: '#fff', fontSize: 20, lineHeight: 22, fontWeight: '800' },
+  circlePerson: { width: '100%' },
   person: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
   avatar: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginRight: 11 },
   avatarText: { color: '#fff', fontSize: 12, fontWeight: '800' },
@@ -1101,16 +1161,17 @@ const styles = StyleSheet.create({
   personOnline: { width: 22, alignItems: 'center' },
   onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#4BA67A' },
   offlineDot: { backgroundColor: '#A0A8AF' },
-  nav: { height: 76, borderTopWidth: 1, borderTopColor: '#E2E5E1', backgroundColor: '#fff', flexDirection: 'row', justifyContent: 'space-around', paddingTop: 10 },
+  nav: { height: 62, borderTopWidth: 1, borderTopColor: '#E2E5E1', backgroundColor: '#fff', flexDirection: 'row', justifyContent: 'space-around', paddingTop: 5 },
   navItem: { alignItems: 'center', width: 90 },
-  navIcon: { color: '#A0A8AF', fontSize: 22, height: 27 },
+  navIcon: { color: '#A0A8AF', fontSize: 19, height: 23 },
   navLabel: { color: '#A0A8AF', fontSize: 10, fontWeight: '700', marginTop: 2 },
   navActive: { color: '#0B6EF3' },
   countPill: { backgroundColor: '#E8F2EF', borderRadius: 14, paddingHorizontal: 11, paddingVertical: 7 },
   countText: { color: '#2D8B61', fontSize: 11, fontWeight: '700' },
   circleActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  friendStatusButton: { width: 36, height: 36, borderRadius: 12, backgroundColor: '#E8F4FF', alignItems: 'center', justifyContent: 'center', position: 'relative' },
-  friendStatusIcon: { color: '#0B6EF3', fontSize: 20, fontWeight: '800' },
+  friendStatusButton: { width: 104, height: 36, borderRadius: 12, backgroundColor: '#E8F4FF', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', position: 'relative', gap: 5 },
+  friendStatusIcon: { color: '#0B6EF3', fontSize: 19, fontWeight: '800' },
+  friendStatusLabel: { color: '#0B6EF3', fontSize: 11, fontWeight: '800' },
   friendStatusBadge: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#10BFAF', position: 'absolute', right: 6, top: 5 },
   requestNotice: { color: '#0B6EF3', backgroundColor: '#E8F4FF', borderRadius: 12, padding: 10, fontSize: 12, fontWeight: '700', marginTop: 12 },
   pageIntro: { color: '#7A8494', fontSize: 14, lineHeight: 20, marginBottom: 18 },
@@ -1154,8 +1215,12 @@ const styles = StyleSheet.create({
   sharingIndicator: { alignItems: 'center' },
   sharingDot: { width: 8, height: 8, borderRadius: 4, marginBottom: 2 },
   sharingText: { fontSize: 10, fontWeight: '600' },
-  removeButton: { borderWidth: 1, borderColor: '#E5684A', borderRadius: 9, paddingHorizontal: 8, paddingVertical: 6 },
-  removeButtonText: { color: '#D0533A', fontSize: 10, fontWeight: '800' },
+  friendRow: { minHeight: 62, flexDirection: 'row', alignItems: 'center', position: 'relative' },
+  friendMain: { flex: 1, flexDirection: 'row', alignItems: 'center' },
+  moreButton: { width: 34, height: 40, alignItems: 'center', justifyContent: 'center' },
+  moreButtonText: { color: '#7A8494', fontSize: 16, fontWeight: '800', letterSpacing: 1 },
+  friendMenu: { position: 'absolute', right: 6, top: 46, zIndex: 5, backgroundColor: '#fff', borderRadius: 10, paddingVertical: 4, paddingHorizontal: 10, shadowColor: '#10224E', shadowOpacity: 0.16, shadowRadius: 8, elevation: 4 },
+  friendMenuText: { color: '#D0533A', fontSize: 12, fontWeight: '700', paddingVertical: 7 },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   statusBadgeText: { color: '#fff', fontSize: 10, fontWeight: '700', textTransform: 'capitalize' },
   profileTabs: { flexDirection: 'row', backgroundColor: '#E8F4FF', borderRadius: 14, padding: 4, marginTop: 24 },
@@ -1168,6 +1233,6 @@ const styles = StyleSheet.create({
   modalTitle: { color: '#10224E', fontSize: 19, fontWeight: '800' },
   modalCopy: { color: '#66727F', fontSize: 14, lineHeight: 20, marginTop: 8 },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 12, marginTop: 20 },
-  noticeToast: { position: 'absolute', top: 12, left: 18, right: 18, zIndex: 10, backgroundColor: '#10224E', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 13, shadowColor: '#10224E', shadowOpacity: 0.18, shadowRadius: 10, elevation: 5 },
+  noticeToast: { position: 'absolute', top: 42, left: 18, right: 18, zIndex: 10, backgroundColor: '#10224E', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 13, shadowColor: '#10224E', shadowOpacity: 0.18, shadowRadius: 10, elevation: 5 },
   noticeToastText: { color: '#fff', fontSize: 13, fontWeight: '700', textAlign: 'center' },
 });

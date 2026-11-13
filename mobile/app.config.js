@@ -12,7 +12,7 @@ module.exports = {
     name: 'PingMe',
     slug: 'pingme',
     scheme: 'pingme',
-    version: '1.3.1',
+    version: '1.4.0',
     orientation: 'portrait',
     userInterfaceStyle: 'light',
     icon: './assets/icon.png',

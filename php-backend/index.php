@@ -84,8 +84,17 @@ if ($method === 'PATCH' && $path === '/me/profile') {
     $email = strtolower(trim((string) ($body['email'] ?? '')));
     $name = trim((string) ($body['name'] ?? ''));
     $avatarId = (string) ($body['avatarId'] ?? '');
-    if (!preg_match('/^[a-z0-9_]{3,40}$/', $username) || !filter_var($email, FILTER_VALIDATE_EMAIL) || $name === '' || strlen($name) > 120 || !in_array($avatarId, $allowedAvatarIds, true)) {
-        jsonResponse(['message' => 'Valid username, name, email, and avatarId are required'], 400);
+    if (!preg_match('/^[a-z0-9_]{3,40}$/', $username)) {
+        jsonResponse(['message' => 'Username must be 3-40 characters using letters, numbers, or underscores'], 400);
+    }
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        jsonResponse(['message' => 'Please enter a valid email address'], 400);
+    }
+    if ($name === '' || strlen($name) > 120) {
+        jsonResponse(['message' => 'Name is required and must be 120 characters or fewer'], 400);
+    }
+    if (!in_array($avatarId, $allowedAvatarIds, true)) {
+        jsonResponse(['message' => 'Please choose a valid profile avatar'], 400);
     }
 
     $duplicate = $pdo->prepare('SELECT id FROM users WHERE (email = ? OR username = ?) AND id <> ?');

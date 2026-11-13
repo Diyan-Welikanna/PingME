@@ -8,6 +8,9 @@ A secure real-time location sharing MVP.
 - `server/` - Express + Socket.IO API
 - `php-backend/` - PHP + MySQL API and database schema
 
+See [PROJECT_SCENARIOS_AND_ERRORS.md](PROJECT_SCENARIOS_AND_ERRORS.md) for the
+complete demo scenario and error checklist.
+
 ## Run locally
 
 Expo SDK 57 requires Node.js `20.19.4` or newer. Check with `node --version` before starting the mobile app.
